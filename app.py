@@ -10,10 +10,21 @@ st.set_page_config(
     layout="wide"
 )
 
-# Connect and activate schemas
+# Connect and activate schemas safely
 create_tables()
 
 st.title("💊 Cancer Medicines Management System")
+
+# SYSTEM STORAGE PERSISTENCE AUDIT CHECK
+if not is_storage_permanent():
+    st.sidebar.warning(
+        "⚠️ **Temporary Storage Warning**\n\n"
+        "The app is currently saving data to a temporary fallback file. "
+        "To ensure your meeting notes are saved permanently, please go to your "
+        "Railway dashboard, add a persistent **Volume**, and set its mount path to `/data`."
+    )
+else:
+    st.sidebar.success("🔒 Permanent Cloud Storage Connected")
 
 tabs = st.tabs([
     "📊 Summary Action Dashboard",
@@ -68,18 +79,14 @@ with tabs[1]:
         h_col6.markdown("**Save**")
         st.markdown("<hr style='margin:0px 0px 10px 0px; border-top: 2px solid #555;' />", unsafe_allow_html=True)
         
-        # Render Spreadsheet Row Elements Instantly
         for idx, row in records.iterrows():
             medicine = row["medicine_name"]
             group_label = row["base_drug_name"]
             
-            # Setup row grid container
             r_col1, r_col2, r_col3, r_col4, r_col5, r_col6 = st.columns([3.5, 1.8, 1.8, 2.5, 3.5, 0.8])
             
-            # Col 1: Name Description
             r_col1.write(f"**{group_label}**\n\n{medicine}")
             
-            # Col 2: Interactive Dropdown Selectbox
             status_options = ["Open", "In Progress", "Waiting Supplier", "Escalated", "Completed"]
             try:
                 def_idx = status_options.index(row["status"])
@@ -90,23 +97,19 @@ with tabs[1]:
                 key=f"status_{medicine}", label_visibility="collapsed"
             )
             
-            # Col 3: Owner Field
             current_owner = r_col3.text_input(
                 "Owner", value=row["owner"], 
                 key=f"owner_{medicine}", label_visibility="collapsed", placeholder="Unassigned"
             )
             
-            # Col 4: Last Updated Summary Note
             note_preview = f"⏱️ *({row['last_updated']})*:\n\n{row['last_comment']}"
             r_col4.caption(note_preview)
             
-            # Col 5: Fresh Action Entry Field
             new_comment = r_col5.text_input(
                 "New Comment", key=f"comment_{medicine}", 
                 label_visibility="collapsed", placeholder="Type minutes update..."
             )
             
-            # Col 6: Inline Submission Control
             if r_col6.button("💾", key=f"save_{medicine}", help=f"Save changes for {medicine}"):
                 if not new_comment.strip():
                     st.error("Please provide an action description note comment before updating this row.")
@@ -115,7 +118,6 @@ with tabs[1]:
                     st.success(f"Saved: {medicine}")
                     st.rerun()
                     
-            # Collapsible History Log directly below the row matrix element
             with st.expander("📜 View Full Past Change Log Timeline", expanded=False):
                 history_df = get_medicine_history(medicine)
                 if len(history_df) <= 1:

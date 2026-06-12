@@ -3,26 +3,45 @@ import sqlite3
 import pandas as pd
 
 def get_connection():
-    """Establishes connection to a persistent database folder on Railway, 
-    or a fallback local file on your machine."""
-    # Checks if running inside Railway's cloud environment environment
-    if os.environ.get("RAILWAY_ENVIRONMENT_ID") or os.path.exists("/data"):
-        return sqlite3.connect("/data/medicines.db", check_same_thread=False)
+    """Attempts to connect to the persistent cloud volume path. 
+    If misconfigured or locked, it gracefully falls back to a local 
+    project file so the app never crashes on launch."""
+    railway_volume_path = "/data/medicines.db"
     
-    # Local fallback for your testing offline
+    try:
+        # Check if we are on Railway and if the directory is accessible
+        if os.environ.get("RAILWAY_ENVIRONMENT_ID") or os.path.exists("/data"):
+            # Test if we can open/write to the volume database file
+            conn = sqlite3.connect(railway_volume_path, check_same_thread=False)
+            conn.execute("SELECT 1") 
+            return conn
+    except sqlite3.OperationalError:
+        # If the volume isn't mounted yet, ignore the error and pass through
+        pass
+    
+    # Safe fallback: Creates 'medicines.db' right inside your project directory
     return sqlite3.connect("medicines.db", check_same_thread=False)
+
+def is_storage_permanent():
+    """Helper function to verify if the app is successfully writing to permanent storage."""
+    if os.path.exists("/data"):
+        try:
+            conn = sqlite3.connect("/data/medicines.db")
+            conn.close()
+            return True
+        except sqlite3.OperationalError:
+            return False
+    return False
 
 def create_tables():
     conn = get_connection()
     cur = conn.cursor()
 
-    # SCHEMA MIGRATION CHECK: Safe verification step to clear old column layouts
     try:
         cur.execute("SELECT base_drug_name FROM medicines LIMIT 1")
     except sqlite3.OperationalError:
         cur.execute("DROP TABLE IF EXISTS medicines")
 
-    # Re-create clean master table with base drug matching rules
     cur.execute("""
     CREATE TABLE IF NOT EXISTS medicines (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,7 +50,6 @@ def create_tables():
     )
     """)
 
-    # Keeps meeting actions intact over time chronologically
     cur.execute("""
     CREATE TABLE IF NOT EXISTS medicine_updates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,7 +66,6 @@ def create_tables():
     conn.close()
 
 def get_unique_base_drugs():
-    """Retrieves generic parent names to build clean meeting rows."""
     conn = get_connection()
     query = "SELECT DISTINCT base_drug_name FROM medicines ORDER BY base_drug_name"
     df = pd.read_sql_query(query, conn)
@@ -56,7 +73,6 @@ def get_unique_base_drugs():
     return df["base_drug_name"].tolist()
 
 def get_medicines_grid():
-    """Fetches full data mapping directly into the inline spreadsheet view."""
     conn = get_connection()
     query = """
     SELECT m.base_drug_name, m.medicine_name,
@@ -77,7 +93,6 @@ def get_medicines_grid():
     return df
 
 def get_latest_statuses():
-    """Generates the main overview table showing current status details for all items on Dashboard."""
     conn = get_connection()
     query = """
     SELECT m.base_drug_name as "Drug Group", 
@@ -99,7 +114,6 @@ def get_latest_statuses():
     return df
 
 def get_medicine_history(medicine_name):
-    """Retrieves the full tracking timeline history for an item."""
     conn = get_connection()
     query = """
     SELECT update_date, status, owner, comment 
@@ -112,7 +126,6 @@ def get_medicine_history(medicine_name):
     return df
 
 def save_update(medicine_name, update_date, status, owner, comment):
-    """Appends a new chronological update log row into the table database."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -123,7 +136,6 @@ def save_update(medicine_name, update_date, status, owner, comment):
     conn.close()
 
 def get_dashboard_stats():
-    """Aggregates metrics directly from the absolute latest status entries."""
     conn = get_connection()
     cur = conn.cursor()
     
