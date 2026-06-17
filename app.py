@@ -85,7 +85,7 @@ with tabs[1]:
             medicine = row["medicine_name"]
             group_label = row["base_drug_name"]
             
-            r_col1, r_col2, r_col3, r_col4, r_col5, r_col6, r_col7, r_col8 = st.columns([3.0, 0.8, 0.8, 1.5, 1.5, 2.0, 3.0, 0.5])
+            r_col1, r_col2, r_col3, r_col4, r_col5, r_col6, r_col7, r_col8 = st.columns([2.5, 0.7, 0.7, 1.2, 1.2, 1.5, 2.5, 0.4]])
             
             r_col1.write(f"**{group_label}**\n\n{medicine}")
             
