@@ -4,11 +4,24 @@ import pandas as pd
 
 def get_connection():
     railway_volume_path = "/data/medicines.db"
-    # Use persistent volume if available, else local file
+    # Ensure the directory exists if on Railway
     if os.environ.get("RAILWAY_ENVIRONMENT_ID") or os.path.exists("/data"):
         os.makedirs("/data", exist_ok=True)
         return sqlite3.connect(railway_volume_path, check_same_thread=False)
     return sqlite3.connect("medicines.db", check_same_thread=False)
+
+def is_storage_permanent():
+    """Checks if the app is successfully pointing to the persistent volume."""
+    path = "/data/medicines.db"
+    if os.path.exists("/data"):
+        try:
+            # Try to connect/create a connection to the volume
+            conn = sqlite3.connect(path)
+            conn.close()
+            return True
+        except:
+            return False
+    return False
 
 def update_schema():
     """Safely adds Stock and Transit columns to your existing database."""
@@ -57,6 +70,7 @@ def update_stock_levels(medicine_name, soh, transit):
     conn.commit()
     conn.close()
 
+# Keep these helper functions as they were in your original code
 def get_medicines_grid():
     conn = get_connection()
     query = """
@@ -79,4 +93,51 @@ def get_medicines_grid():
     conn.close()
     return df
 
-# ... (Keep all your existing functions like get_latest_statuses, get_medicine_history, save_update, get_dashboard_stats)
+def get_latest_statuses():
+    conn = get_connection()
+    query = """
+    SELECT m.base_drug_name as "Drug Group", 
+           m.medicine_name as "Medicine", 
+           COALESCE(mu.status, 'Open') as "Status", 
+           COALESCE(mu.owner, '-') as "Owner", 
+           COALESCE(mu.comment, '-') as "Note",
+           COALESCE(mu.update_date, '-') as "Updated"
+    FROM medicines m
+    LEFT JOIN (
+        SELECT medicine_name, status, owner, comment, update_date,
+               ROW_NUMBER() OVER (PARTITION BY medicine_name ORDER BY created_at DESC) as rn
+        FROM medicine_updates
+    ) mu ON m.medicine_name = mu.medicine_name AND mu.rn = 1
+    ORDER BY m.base_drug_name, m.medicine_name
+    """
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+    return df
+
+def get_medicine_history(medicine_name):
+    conn = get_connection()
+    query = "SELECT update_date, status, owner, comment FROM medicine_updates WHERE medicine_name = ? ORDER BY created_at DESC"
+    df = pd.read_sql_query(query, conn, params=(medicine_name,))
+    conn.close()
+    return df
+
+def save_update(medicine_name, update_date, status, owner, comment):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO medicine_updates (medicine_name, update_date, status, owner, comment) VALUES (?, ?, ?, ?, ?)", (medicine_name, update_date, status, owner, comment))
+    conn.commit()
+    conn.close()
+
+def get_dashboard_stats():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM medicines")
+    total = cur.fetchone()[0] or 0
+    cur.execute("SELECT COALESCE(mu.status, 'Open'), COUNT(*) FROM medicines m LEFT JOIN (SELECT medicine_name, status, ROW_NUMBER() OVER (PARTITION BY medicine_name ORDER BY created_at DESC) as rn FROM medicine_updates) mu ON m.medicine_name = mu.medicine_name AND mu.rn = 1 GROUP BY COALESCE(mu.status, 'Open')")
+    rows = cur.fetchall()
+    conn.close()
+    stats = {"total": total, "open": 0, "progress": 0, "supplier": 0, "escalated": 0, "completed": 0}
+    mapping = {"Open": "open", "In Progress": "progress", "Waiting Supplier": "supplier", "Escalated": "escalated", "Completed": "completed"}
+    for status_val, count_val in rows:
+        if status_val in mapping: stats[mapping[status_val]] = count_val
+    return stats
