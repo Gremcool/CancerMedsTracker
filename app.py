@@ -12,6 +12,7 @@ st.set_page_config(
 
 # Connect and activate schemas safely
 create_tables()
+update_schema()  # Migrates your DB to add SOH and In-Transit columns
 
 st.title("💊 Cancer Medicines Management System")
 
@@ -20,8 +21,7 @@ if not is_storage_permanent():
     st.sidebar.warning(
         "⚠️ **Temporary Storage Warning**\n\n"
         "The app is currently saving data to a temporary fallback file. "
-        "To ensure your meeting notes are saved permanently, please go to your "
-        "Railway dashboard, add a persistent **Volume**, and set its mount path to `/data`."
+        "Please add a persistent **Volume** in Railway with mount path `/data`."
     )
 else:
     st.sidebar.success("🔒 Permanent Cloud Storage Connected")
@@ -57,7 +57,7 @@ with tabs[0]:
         st.dataframe(master_grid, use_container_width=True, height=500)
 
 # ====================================================
-# TAB 2: LIVE MEETING REVIEW (EXCEL INLINE LAYOUT)
+# TAB 2: LIVE MEETING REVIEW
 # ====================================================
 with tabs[1]:
     st.subheader("Interactive Board Grid Review")
@@ -67,65 +67,48 @@ with tabs[1]:
     if len(records) == 0:
         st.warning("No data found. Please run a baseline file ingest on the Import tab first.")
     else:
-        st.caption("Modify statuses, assign owners, and input notes directly on any item row below. Save individual rows instantly.")
+        st.caption("Modify inventory, statuses, and notes directly on any row. Save individual rows instantly.")
         
         # Grid Header Labels
-        h_col1, h_col2, h_col3, h_col4, h_col5, h_col6 = st.columns([3.5, 1.8, 1.8, 2.5, 3.5, 0.8])
-        h_col1.markdown("**Medicine Formulation Description**")
-        h_col2.markdown("**Status**")
-        h_col3.markdown("**Action Owner**")
-        h_col4.markdown("**Last Updated Note Context**")
-        h_col5.markdown("**New Meeting Update Notes**")
-        h_col6.markdown("**Save**")
+        h_col1, h_col2, h_col3, h_col4, h_col5, h_col6, h_col7, h_col8 = st.columns([3.0, 0.8, 0.8, 1.5, 1.5, 2.0, 3.0, 0.5])
+        h_col1.markdown("**Medicine Description**")
+        h_col2.markdown("**SOH**")
+        h_col3.markdown("**Trns**")
+        h_col4.markdown("**Status**")
+        h_col5.markdown("**Owner**")
+        h_col6.markdown("**Last Note**")
+        h_col7.markdown("**New Update**")
+        h_col8.markdown("**Save**")
         st.markdown("<hr style='margin:0px 0px 10px 0px; border-top: 2px solid #555;' />", unsafe_allow_html=True)
         
         for idx, row in records.iterrows():
             medicine = row["medicine_name"]
             group_label = row["base_drug_name"]
             
-            r_col1, r_col2, r_col3, r_col4, r_col5, r_col6 = st.columns([3.5, 1.8, 1.8, 2.5, 3.5, 0.8])
+            r_col1, r_col2, r_col3, r_col4, r_col5, r_col6, r_col7, r_col8 = st.columns([3.0, 0.8, 0.8, 1.5, 1.5, 2.0, 3.0, 0.5])
             
             r_col1.write(f"**{group_label}**\n\n{medicine}")
             
+            # New Inventory Inputs
+            soh = r_col2.number_input("SOH", value=float(row["stock_on_hand"]), key=f"soh_{medicine}", label_visibility="collapsed")
+            transit = r_col3.number_input("Trns", value=float(row["in_transit"]), key=f"transit_{medicine}", label_visibility="collapsed")
+            
+            # Status and Owner
             status_options = ["Open", "In Progress", "Waiting Supplier", "Escalated", "Completed"]
-            try:
-                def_idx = status_options.index(row["status"])
-            except ValueError:
-                def_idx = 0
-            selected_status = r_col2.selectbox(
-                "Status", status_options, index=def_idx, 
-                key=f"status_{medicine}", label_visibility="collapsed"
-            )
+            def_idx = status_options.index(row["status"]) if row["status"] in status_options else 0
+            selected_status = r_col4.selectbox("Status", status_options, index=def_idx, key=f"status_{medicine}", label_visibility="collapsed")
+            current_owner = r_col5.text_input("Owner", value=row["owner"], key=f"owner_{medicine}", label_visibility="collapsed")
             
-            current_owner = r_col3.text_input(
-                "Owner", value=row["owner"], 
-                key=f"owner_{medicine}", label_visibility="collapsed", placeholder="Unassigned"
-            )
+            # Note display and input
+            r_col6.caption(f"⏱️ *({row['last_updated']})*: {row['last_comment']}")
+            new_comment = r_col7.text_input("New Comment", key=f"comment_{medicine}", label_visibility="collapsed", placeholder="Type update...")
             
-            note_preview = f"⏱️ *({row['last_updated']})*:\n\n{row['last_comment']}"
-            r_col4.caption(note_preview)
-            
-            new_comment = r_col5.text_input(
-                "New Comment", key=f"comment_{medicine}", 
-                label_visibility="collapsed", placeholder="Type minutes update..."
-            )
-            
-            if r_col6.button("💾", key=f"save_{medicine}", help=f"Save changes for {medicine}"):
-                if not new_comment.strip():
-                    st.error("Please provide an action description note comment before updating this row.")
-                else:
+            if r_col8.button("💾", key=f"save_{medicine}", help=f"Save changes for {medicine}"):
+                update_stock_levels(medicine, soh, transit)
+                if new_comment.strip():
                     save_update(medicine, str(date.today()), selected_status, current_owner, new_comment)
-                    st.success(f"Saved: {medicine}")
-                    st.rerun()
-                    
-            with st.expander("📜 View Full Past Change Log Timeline", expanded=False):
-                history_df = get_medicine_history(medicine)
-                if len(history_df) <= 1:
-                    st.caption("No older historical timeline records found for this formulation.")
-                else:
-                    for _, log in history_df.iloc[1:].iterrows():
-                        st.markdown(f"🗓️ **{log['update_date']}** | Status: `{log['status']}` | Owner: `{log['owner'] or '-'}`")
-                        st.markdown(f"> *{log['comment']}*")
+                st.success("Updated!")
+                st.rerun()
             
             st.markdown("<hr style='margin:5px 0px; border-top: 1px dashed #444;' />", unsafe_allow_html=True)
 
@@ -139,28 +122,15 @@ with tabs[2]:
     if uploaded_file:
         try:
             sheets = load_excel_sheets(uploaded_file)
-            
-            default_index = 0
-            for idx, s in enumerate(sheets):
-                if "ORDER" in s.upper() or "ASSESSMENT" in s.upper():
-                    default_index = idx
-                    break
-            
-            selected_sheet = st.selectbox("Select Target Sheet Tab to Sync:", sheets, index=default_index)
+            selected_sheet = st.selectbox("Select Target Sheet Tab to Sync:", sheets)
             
             df = load_excel(uploaded_file, sheet_name=selected_sheet)
             df_prepared = prepare_medicines(df)
             
-            if len(df_prepared) == 0:
-                st.error("No valid medicine rows matching an 'ITEM DESCRIPTION' layout were identified.")
-            else:
-                st.info(f"Detected {len(df_prepared)} unique medicine variations inside tab '{selected_sheet}'.")
-                if st.button("🚀 Confirm and Load Records", type="primary"):
-                    save_medicines(df_prepared)
-                    st.success("Master medicine inventory directory updated successfully!")
-                    st.rerun()
-                
-                st.write("### Data Columns Preview Matrix:")
-                st.dataframe(df_prepared, use_container_width=True)
+            if st.button("🚀 Confirm and Load Records", type="primary"):
+                save_medicines(df_prepared)
+                st.success("Master medicine inventory directory updated successfully!")
+                st.rerun()
+            st.dataframe(df_prepared, use_container_width=True)
         except Exception as e:
-            st.error(f"Excel File Parser Exception Encountered: {e}")
+            st.error(f"Excel Parser Error: {e}")
