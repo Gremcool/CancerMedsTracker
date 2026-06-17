@@ -73,7 +73,7 @@ with tabs[1]:
         h_col1, h_col2, h_col3, h_col4, h_col5, h_col6, h_col7, h_col8 = st.columns([3.0, 0.8, 0.8, 1.5, 1.5, 2.0, 3.0, 0.5])
         h_col1.markdown("**Medicine Description**")
         h_col2.markdown("**SOH**")
-        h_col3.markdown("**Trns**")
+        h_col3.markdown("**Transit**")
         h_col4.markdown("**Status**")
         h_col5.markdown("**Owner**")
         h_col6.markdown("**Last Note**")
@@ -91,7 +91,7 @@ with tabs[1]:
             
             # New Inventory Inputs
             soh = r_col2.number_input("SOH", value=float(row["stock_on_hand"]), key=f"soh_{medicine}", label_visibility="collapsed")
-            transit = r_col3.number_input("Trns", value=float(row["in_transit"]), key=f"transit_{medicine}", label_visibility="collapsed")
+            transit = r_col3.number_input("Transit", value=float(row["in_transit"]), key=f"transit_{medicine}", label_visibility="collapsed")
             
             # Status and Owner
             status_options = ["Open", "In Progress", "Waiting Supplier", "Escalated", "Completed"]
@@ -109,6 +109,16 @@ with tabs[1]:
                     save_update(medicine, str(date.today()), selected_status, current_owner, new_comment)
                 st.success("Updated!")
                 st.rerun()
+            
+            # RESTORED: Full Change Log Timeline
+            with st.expander("📜 View Full Past Change Log Timeline", expanded=False):
+                history_df = get_medicine_history(medicine)
+                if len(history_df) <= 1:
+                    st.caption("No older historical timeline records found.")
+                else:
+                    for _, log in history_df.iloc[1:].iterrows():
+                        st.markdown(f"🗓️ **{log['update_date']}** | Status: `{log['status']}` | Owner: `{log['owner'] or '-'}`")
+                        st.markdown(f"> *{log['comment']}*")
             
             st.markdown("<hr style='margin:5px 0px; border-top: 1px dashed #444;' />", unsafe_allow_html=True)
 
