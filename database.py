@@ -75,8 +75,8 @@ def get_medicines_grid():
     conn = get_connection()
     query = """
     SELECT m.base_drug_name, m.medicine_name, 
-           COALESCE(m.stock_on_hand, 0) as stock_on_hand, 
-           COALESCE(m.in_transit, 0) as in_transit,
+           CAST(COALESCE(m.stock_on_hand, 0) AS INTEGER) as stock_on_hand, 
+           CAST(COALESCE(m.in_transit, 0) AS INTEGER) as in_transit,
            COALESCE(mu.status, 'Open') as status,
            COALESCE(mu.owner, '') as owner,
            COALESCE(mu.comment, '-') as last_comment,
@@ -97,8 +97,8 @@ def get_latest_statuses():
     conn = get_connection()
     query = """
     SELECT m.base_drug_name as "Drug Group", 
-           m.medicine_name as "Medicine", 
-           COALESCE(m.stock_on_hand, 0) as "SOH", 
+           CAST(COALESCE(m.stock_on_hand, 0) AS INTEGER) as stock_on_hand, 
+           CAST(COALESCE(m.in_transit, 0) AS INTEGER) as in_transit,
            COALESCE(m.in_transit, 0) as "Transit",
            COALESCE(mu.status, 'Open') as "Status", 
            COALESCE(mu.owner, '-') as "Owner", 
