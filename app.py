@@ -73,7 +73,7 @@ with tabs[1]:
         h_col1, h_col2, h_col3, h_col4, h_col5, h_col6, h_col7, h_col8 = st.columns([3.0, 0.8, 0.8, 1.5, 1.5, 2.0, 3.0, 0.5])
         h_col1.markdown("**Medicine Description**")
         h_col2.markdown("**SOH**")
-        h_col3.markdown("**Transit**")
+        h_col3.markdown("**Inbound**")
         h_col4.markdown("**Status**")
         h_col5.markdown("**Owner**")
         h_col6.markdown("**Last Note**")
@@ -90,8 +90,8 @@ with tabs[1]:
             r_col1.write(f"**{group_label}**\n\n{medicine}")
             
             # New Inventory Inputs
-            soh = r_col2.number_input("SOH", value=float(row["stock_on_hand"]), key=f"soh_{medicine}", label_visibility="collapsed")
-            transit = r_col3.number_input("Transit", value=float(row["in_transit"]), key=f"transit_{medicine}", label_visibility="collapsed")
+            soh = r_col2.number_input("SOH", value=int(row["stock_on_hand"]), key=f"soh_{medicine}", label_visibility="collapsed")
+            transit = r_col3.number_input("Transit", value=int(row["in_transit"]), key=f"transit_{medicine}", label_visibility="collapsed")
             
             # Status and Owner
             status_options = ["Open", "In Progress", "Waiting Supplier", "Escalated", "Completed"]
