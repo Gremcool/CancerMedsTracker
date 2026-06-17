@@ -98,6 +98,8 @@ def get_latest_statuses():
     query = """
     SELECT m.base_drug_name as "Drug Group", 
            m.medicine_name as "Medicine", 
+           COALESCE(m.stock_on_hand, 0) as "SOH", 
+           COALESCE(m.in_transit, 0) as "Transit",
            COALESCE(mu.status, 'Open') as "Status", 
            COALESCE(mu.owner, '-') as "Owner", 
            COALESCE(mu.comment, '-') as "Note",
