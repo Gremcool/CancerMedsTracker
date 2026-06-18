@@ -99,7 +99,6 @@ def get_latest_statuses():
     SELECT m.base_drug_name as "Drug Group", 
            CAST(COALESCE(m.stock_on_hand, 0) AS INTEGER) as stock_on_hand, 
            CAST(COALESCE(m.in_transit, 0) AS INTEGER) as in_transit,
-           COALESCE(m.in_transit, 0) as "Transit",
            COALESCE(mu.status, 'Open') as "Status", 
            COALESCE(mu.owner, '-') as "Owner", 
            COALESCE(mu.comment, '-') as "Note",
