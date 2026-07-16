@@ -24,7 +24,7 @@ def is_storage_permanent():
     return False
 
 def update_schema():
-    """Safely adds Stock and Transit columns to your existing database."""
+    """Safely adds Stock, Transit, AMC, and Request columns to your existing database."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("PRAGMA table_info(medicines)")
@@ -34,6 +34,10 @@ def update_schema():
         cur.execute("ALTER TABLE medicines ADD COLUMN stock_on_hand REAL DEFAULT 0")
     if "in_transit" not in columns:
         cur.execute("ALTER TABLE medicines ADD COLUMN in_transit REAL DEFAULT 0")
+    if "amc" not in columns:
+        cur.execute("ALTER TABLE medicines ADD COLUMN amc REAL DEFAULT 0")
+    if "request_qty" not in columns:
+        cur.execute("ALTER TABLE medicines ADD COLUMN request_qty REAL DEFAULT 0")
     conn.commit()
     conn.close()
 
@@ -46,7 +50,9 @@ def create_tables():
         base_drug_name TEXT,
         medicine_name TEXT UNIQUE,
         stock_on_hand REAL DEFAULT 0,
-        in_transit REAL DEFAULT 0
+        in_transit REAL DEFAULT 0,
+        amc REAL DEFAULT 0,
+        request_qty REAL DEFAULT 0
     )
     """)
     cur.execute("""
@@ -63,12 +69,32 @@ def create_tables():
     conn.commit()
     conn.close()
 
-def update_stock_levels(medicine_name, soh, transit):
+def update_stock_levels(medicine_name, soh, transit, amc=0, request_qty=0):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("UPDATE medicines SET stock_on_hand = ?, in_transit = ? WHERE medicine_name = ?", (soh, transit, medicine_name))
+    cur.execute("""
+    UPDATE medicines 
+    SET stock_on_hand = ?, in_transit = ?, amc = ?, request_qty = ? 
+    WHERE medicine_name = ?
+    """, (soh, transit, amc, request_qty, medicine_name))
     conn.commit()
     conn.close()
+
+def add_new_medicine(base_drug_name, medicine_name, stock_on_hand=0, in_transit=0, amc=0, request_qty=0):
+    """Saves a brand new medicine row manually."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+        INSERT INTO medicines (base_drug_name, medicine_name, stock_on_hand, in_transit, amc, request_qty)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (base_drug_name, medicine_name, stock_on_hand, in_transit, amc, request_qty))
+        conn.commit()
+        success = True
+    except sqlite3.IntegrityError:
+        success = False  # Medicine name already exists
+    conn.close()
+    return success
 
 # Keep these helper functions as they were in your original code
 def get_medicines_grid():
@@ -77,6 +103,8 @@ def get_medicines_grid():
     SELECT m.base_drug_name, m.medicine_name, 
            CAST(COALESCE(m.stock_on_hand, 0) AS INTEGER) as stock_on_hand, 
            CAST(COALESCE(m.in_transit, 0) AS INTEGER) as in_transit,
+           CAST(COALESCE(m.amc, 0) AS INTEGER) as amc,
+           CAST(COALESCE(m.request_qty, 0) AS INTEGER) as request_qty,
            COALESCE(mu.status, 'Open') as status,
            COALESCE(mu.owner, '') as owner,
            COALESCE(mu.comment, '-') as last_comment,
@@ -97,8 +125,11 @@ def get_latest_statuses():
     conn = get_connection()
     query = """
     SELECT m.base_drug_name as "Drug Group", 
-           CAST(COALESCE(m.stock_on_hand, 0) AS INTEGER) as stock_on_hand, 
-           CAST(COALESCE(m.in_transit, 0) AS INTEGER) as in_transit,
+           m.medicine_name as "Medicine", 
+           CAST(COALESCE(m.stock_on_hand, 0) AS INTEGER) as "SOH", 
+           CAST(COALESCE(m.in_transit, 0) AS INTEGER) as "Transit",
+           CAST(COALESCE(m.amc, 0) AS INTEGER) as "AMC",
+           CAST(COALESCE(m.request_qty, 0) AS INTEGER) as "Request",
            COALESCE(mu.status, 'Open') as "Status", 
            COALESCE(mu.owner, '-') as "Owner", 
            COALESCE(mu.comment, '-') as "Note",
