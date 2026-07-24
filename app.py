@@ -1,3 +1,10 @@
+import os
+import sys
+import json
+
+# Ensure local imports resolve safely
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
@@ -7,17 +14,17 @@ from excel_import import *
 
 # Configure page and hide sidebar by default
 st.set_page_config(
-    page_title="Cancer Medicines Tracker",
+    page_title="Medical Inventory System",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# Inject custom CSS to push title to the top and hide sidebar navigation panel entirely
+# Inject custom CSS to lower top controls below Streamlit header banner and tighten spacing
 st.markdown("""
     <style>
-        /* Push the main layout container to the top */
+        /* Increase top padding to clear Streamlit's header banner */
         .block-container {
-            padding-top: 1rem !important;
+            padding-top: 3.2rem !important;
             padding-bottom: 0rem !important;
             margin-top: 0rem !important;
         }
@@ -25,18 +32,75 @@ st.markdown("""
         [data-testid="collapsedControl"] {
             display: none !important;
         }
-        /* Style the add-row inputs to keep them clean */
+        /* Highlight input borders */
         div[data-testid="stInput"] input {
             border: 1px solid #ff4b4b !important;
+        }
+        /* Pull page title closer to top controls */
+        div[data-testid="stTitle"] {
+            margin-top: -0.6rem !important;
+            padding-top: 0rem !important;
         }
     </style>
 """, unsafe_allow_html=True)
 
-# Connect and activate schemas safely
+# Connect and activate schemas
 create_tables()
-update_schema()  # Migrates your DB to add SOH, In-Transit, AMC, and Request columns
+update_schema()
 
-st.title("💊 Cancer Medicines Management System")
+# ====================================================
+# DYNAMIC CATEGORY BAR & CONTROL PANEL
+# ====================================================
+categories_list = get_all_categories()
+
+c_bar1, c_bar2, c_bar3 = st.columns([3.5, 1.0, 1.0])
+
+active_category = c_bar1.radio(
+    "Active Category",
+    options=categories_list,
+    horizontal=True,
+    key="active_category_selector",
+    label_visibility="collapsed"
+)
+
+with c_bar2.popover("➕ New Category"):
+    st.markdown("### Create Category")
+    new_cat_input = st.text_input("Category Name", placeholder="e.g. Surgical Supplies...", key="input_new_category").strip()
+    if st.button("🚀 Create Category", type="primary"):
+        if new_cat_input:
+            add_category(new_cat_input)
+            st.session_state["input_new_category"] = ""  # Clear input
+            st.rerun()  # Triggers rerun and automatically closes popover
+        else:
+            st.error("Please enter a category name.")
+
+# Custom Columns Manager Popover
+custom_cols = get_category_custom_columns(active_category)
+
+with c_bar3.popover("⚙️ Custom Columns"):
+    st.markdown(f"### Columns for '{active_category}'")
+    st.caption("Add dynamic custom attributes to this category without changing code.")
+    
+    if custom_cols:
+        st.write("**Existing Custom Columns:**")
+        for col in custom_cols:
+            col_del1, col_del2 = st.columns([3, 1])
+            col_del1.write(f"• {col}")
+            if col_del2.button("❌", key=f"del_col_{active_category}_{col}"):
+                delete_category_custom_column(active_category, col)
+                st.rerun()
+    else:
+        st.info("No custom columns added yet.")
+        
+    st.markdown("---")
+    new_col_input = st.text_input("New Column Name", placeholder="e.g. Expiry Date, Batch No...", key="input_new_column").strip()
+    if st.button("➕ Add Field", type="primary", key="add_custom_col_btn"):
+        if new_col_input:
+            add_category_custom_column(active_category, new_col_input)
+            st.session_state["input_new_column"] = ""  # Clear input
+            st.rerun()  # Triggers rerun and automatically closes popover
+
+st.title(f"📂 {active_category} Management")
 
 tabs = st.tabs([
     "📊 Summary Action Dashboard",
@@ -44,12 +108,20 @@ tabs = st.tabs([
     "📥 Master Import Portal"
 ])
 
+# Helper function to compute dynamic column layout weights
+def get_column_weights(custom_cols_count):
+    weights = [1.8, 0.5, 0.9, 0.5, 0.8]
+    for _ in range(custom_cols_count):
+        weights.append(0.8)
+    weights.extend([1.0, 1.0, 1.4, 1.8, 0.8])
+    return weights
+
 # ====================================================
-# TAB 1: ACTION DASHBOARD (CUSTOM EXPANDABLE ROW GRID)
+# TAB 1: ACTION DASHBOARD
 # ====================================================
 with tabs[0]:
-    st.subheader("Meeting Action Progress KPIs")
-    stats = get_dashboard_stats()
+    st.subheader(f"Meeting Action Progress KPIs — {active_category}")
+    stats = get_dashboard_stats(active_category)
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Total Items", f"{stats['total']}")
@@ -60,28 +132,38 @@ with tabs[0]:
     c6.metric("Completed ✅", f"{stats['completed']}")
 
     st.markdown("---")
-    st.write("### 📋 Master Meeting Tracking Log Status Overview")
+    st.write(f"### 📋 Master Meeting Tracking Log — {active_category}")
     
-    master_grid = get_latest_statuses()
+    master_grid = get_latest_statuses(active_category)
     if len(master_grid) == 0:
-        st.info("The tracker is empty. Please upload your master sheet via the 'Master Import Portal' tab.")
+        st.info(f"No records under '{active_category}'. You can add items manually in Tab 2 or import an Excel file in Tab 3.")
     else:
-        # Initialize expansion states in session state
         if "expanded_summary_groups" not in st.session_state:
             st.session_state.expanded_summary_groups = set()
             
-        # Grid Header Labels (Perfect alignment matching sub-rows)
-        h_col0, h_col1, h_col2, h_col3, h_col4, h_col5, h_col6, h_col7, h_col8, h_col9 = st.columns([0.4, 1.8, 2.2, 0.6, 0.6, 0.6, 0.6, 1.0, 1.0, 2.0])
-        h_col0.markdown("")  # Expand/Collapse button space
-        h_col1.markdown("**Drug Group**")
-        h_col2.markdown("**Medicine**")
-        h_col3.markdown("**SOH**")
-        h_col4.markdown("**Transit**")
-        h_col5.markdown("**AMC**")
-        h_col6.markdown("**Request**")
-        h_col7.markdown("**Status**")
-        h_col8.markdown("**Owner**")
-        h_col9.markdown("**Last Note**")
+        sum_weights = [0.4, 1.8, 2.2, 0.6, 0.6, 0.6, 0.6]
+        for _ in custom_cols:
+            sum_weights.append(0.8)
+        sum_weights.extend([1.0, 1.0, 2.0])
+        
+        sum_cols_elements = st.columns(sum_weights)
+        sum_cols_elements[0].markdown("")
+        sum_cols_elements[1].markdown("**Group Name**")
+        sum_cols_elements[2].markdown("**Item Name**")
+        sum_cols_elements[3].markdown("**SOH**")
+        sum_cols_elements[4].markdown("**Transit**")
+        sum_cols_elements[5].markdown("**AMC**")
+        sum_cols_elements[6].markdown("**Request**")
+        
+        col_idx = 7
+        for c_name in custom_cols:
+            sum_cols_elements[col_idx].markdown(f"**{c_name}**")
+            col_idx += 1
+            
+        sum_cols_elements[col_idx].markdown("**Status**")
+        sum_cols_elements[col_idx+1].markdown("**Owner**")
+        sum_cols_elements[col_idx+2].markdown("**Last Note**")
+        
         st.markdown("<hr style='margin:0px 0px 10px 0px; border-top: 2px solid #555;' />", unsafe_allow_html=True)
         
         unique_groups = master_grid["Drug Group"].unique()
@@ -90,172 +172,219 @@ with tabs[0]:
             group_df = master_grid[master_grid["Drug Group"] == group_name]
             is_repeating = len(group_df) > 1
             
-            # Row Container
-            r_col0, r_col1, r_col2, r_col3, r_col4, r_col5, r_col6, r_col7, r_col8, r_col9 = st.columns([0.4, 1.8, 2.2, 0.6, 0.6, 0.6, 0.6, 1.0, 1.0, 2.0])
+            r_elements = st.columns(sum_weights)
             
             if is_repeating:
-                # Sum the integer values for the grouped item
                 sum_soh = int(group_df["SOH"].sum())
                 sum_transit = int(group_df["Transit"].sum())
                 sum_amc = int(group_df["AMC"].sum())
                 sum_request = int(group_df["Request"].sum())
                 
-                # Setup unified status representation
                 statuses = group_df["Status"].unique()
                 status_text = ", ".join(statuses) if len(statuses) <= 2 else f"{len(statuses)} Statuses"
                 
-                # Check expansion toggle
                 is_expanded = group_name in st.session_state.expanded_summary_groups
                 btn_label = "➖" if is_expanded else "➕"
                 
-                # Expand click callback
-                if r_col0.button(btn_label, key=f"sum_exp_{group_name}", help="Click to expand/collapse formulation details"):
+                if r_elements[0].button(btn_label, key=f"sum_exp_{group_name}", help="Click to expand/collapse details"):
                     if is_expanded:
                         st.session_state.expanded_summary_groups.remove(group_name)
                     else:
                         st.session_state.expanded_summary_groups.add(group_name)
                     st.rerun()
                 
-                r_col1.markdown(f"**{group_name}**")
-                r_col2.markdown(f"*Multiple formulations ({len(group_df)} items)*")
-                r_col3.markdown(f"**{sum_soh}**")
-                r_col4.markdown(f"**{sum_transit}**")
-                r_col5.markdown(f"**{sum_amc}**")
-                r_col6.markdown(f"**{sum_request}**")
-                r_col7.markdown(f"`{status_text}`")
-                r_col8.markdown("-")
-                r_col9.markdown("-")
+                r_elements[1].markdown(f"**{group_name}**")
+                r_elements[2].markdown(f"*Multiple items ({len(group_df)} items)*")
+                r_elements[3].markdown(f"**{sum_soh}**")
+                r_elements[4].markdown(f"**{sum_transit}**")
+                r_elements[5].markdown(f"**{sum_amc}**")
+                r_elements[6].markdown(f"**{sum_request}**")
                 
-                # Nested formulation rows under the expanded header (Using clean bullet point)
+                c_idx = 7
+                for _ in custom_cols:
+                    r_elements[c_idx].markdown("-")
+                    c_idx += 1
+                    
+                r_elements[c_idx].markdown(f"`{status_text}`")
+                r_elements[c_idx+1].markdown("-")
+                r_elements[c_idx+2].markdown("-")
+                
                 if is_expanded:
                     for idx, row in group_df.iterrows():
-                        sub_c0, sub_c1, sub_c2, sub_c3, sub_c4, sub_c5, sub_c6, sub_c7, sub_c8, sub_c9 = st.columns([0.4, 1.8, 2.2, 0.6, 0.6, 0.6, 0.6, 1.0, 1.0, 2.0])
-                        sub_c0.write("")  # Spacer indent
-                        sub_c1.markdown(f"<span style='color: #777;'>{group_name}</span>", unsafe_allow_html=True)
-                        sub_c2.write(f"• {row['Medicine']}")
-                        sub_c3.write(str(row['SOH']))
-                        sub_c4.write(str(row['Transit']))
-                        sub_c5.write(str(row['AMC']))
-                        sub_c6.write(str(row['Request']))
-                        sub_c7.write(row['Status'])
-                        sub_c8.write(row['Owner'])
-                        sub_c9.caption(f"⏱️ ({row['Updated']}): {row['Note']}")
+                        sub_elements = st.columns(sum_weights)
+                        sub_elements[0].write("")
+                        sub_elements[1].markdown(f"<span style='color: #777;'>{group_name}</span>", unsafe_allow_html=True)
+                        sub_elements[2].write(f"• {row['Medicine']}")
+                        sub_elements[3].write(str(row['SOH']))
+                        sub_elements[4].write(str(row['Transit']))
+                        sub_elements[5].write(str(row['AMC']))
+                        sub_elements[6].write(str(row['Request']))
+                        
+                        c_dict = json.loads(row['CustomFields']) if row['CustomFields'] else {}
+                        c_idx = 7
+                        for c_name in custom_cols:
+                            sub_elements[c_idx].write(str(c_dict.get(c_name, "-")))
+                            c_idx += 1
+                            
+                        sub_elements[c_idx].write(row['Status'])
+                        sub_elements[c_idx+1].write(row['Owner'])
+                        sub_elements[c_idx+2].caption(f"⏱️ ({row['Updated']}): {row['Note']}")
             else:
-                # Normal single row rendering
                 row = group_df.iloc[0]
-                r_col0.write("")  # Spacer empty
-                r_col1.markdown(f"**{group_name}**")
-                r_col2.write(row["Medicine"])
-                r_col3.write(str(row["SOH"]))
-                r_col4.write(str(row["Transit"]))
-                r_col5.write(str(row["AMC"]))
-                r_col6.write(str(row["Request"]))
-                r_col7.write(row["Status"])
-                r_col8.write(row["Owner"])
-                r_col9.caption(f"⏱️ ({row['Updated']}): {row['Note']}")
+                r_elements[0].write("")
+                r_elements[1].markdown(f"**{group_name}**")
+                r_elements[2].write(row["Medicine"])
+                r_elements[3].write(str(row["SOH"]))
+                r_elements[4].write(str(row["Transit"]))
+                r_elements[5].write(str(row["AMC"]))
+                r_elements[6].write(str(row["Request"]))
+                
+                c_dict = json.loads(row['CustomFields']) if row['CustomFields'] else {}
+                c_idx = 7
+                for c_name in custom_cols:
+                    r_elements[c_idx].write(str(c_dict.get(c_name, "-")))
+                    c_idx += 1
+                    
+                r_elements[c_idx].write(row["Status"])
+                r_elements[c_idx+1].write(row["Owner"])
+                r_elements[c_idx+2].caption(f"⏱️ ({row['Updated']}): {row['Note']}")
                 
             st.markdown("<hr style='margin:2px 0px; border-top: 1px dashed #444;' />", unsafe_allow_html=True)
 
 # ====================================================
-# TAB 2: LIVE MEETING REVIEW (INDIVIDUAL ROW SAVE MODE)
+# TAB 2: LIVE REVIEW & ITEM-BY-ITEM CREATION / DELETE
 # ====================================================
 with tabs[1]:
-    st.subheader("Interactive Board Grid Review")
+    st.subheader(f"Interactive Board Grid — {active_category}")
     
-    records = get_medicines_grid()
+    records = get_medicines_grid(active_category)
     
-    if len(records) == 0:
-        st.warning("No records found. Please ingest a master file via the 'Master Import Portal' or add a row above to get started.")
-    else:
-        st.caption("Add a new medicine row directly below, or modify inventory parameter rows instantly.")
+    st.caption(f"Add a new item row directly below under **{active_category}**, or modify/delete existing items.")
+    
+    grid_weights = get_column_weights(len(custom_cols))
+    h_elements = st.columns(grid_weights)
+    
+    h_elements[0].markdown("**Item Description**")
+    h_elements[1].markdown("**SOH**")
+    h_elements[2].markdown("**Inbound**")
+    h_elements[3].markdown("**AMC**")
+    h_elements[4].markdown("**Request**")
+    
+    col_idx = 5
+    for c_name in custom_cols:
+        h_elements[col_idx].markdown(f"**{c_name}**")
+        col_idx += 1
         
-        # Grid Header Labels (Perfect wide 10-column distribution containing individual row save allocations)
-        h_col1, h_col2, h_col3, h_col4, h_col5, h_col6, h_col7, h_col8, h_col9, h_col10 = st.columns([1.8, 0.5, 0.9, 0.5, 0.8, 1.0, 1.0, 1.4, 2.0, 0.5])
-        h_col1.markdown("**Medicine Description**")
-        h_col2.markdown("**SOH**")
-        h_col3.markdown("**Inbound**")
-        h_col4.markdown("**AMC**")
-        h_col5.markdown("**Request**")
-        h_col6.markdown("**Status**")
-        h_col7.markdown("**Owner**")
-        h_col8.markdown("**Last Note**")
-        h_col9.markdown("**New Update**")
-        h_col10.markdown("**Action**")
-        st.markdown("<hr style='margin:0px 0px 10px 0px; border-top: 2px solid #555;' />", unsafe_allow_html=True)
+    h_elements[col_idx].markdown("**Status**")
+    h_elements[col_idx+1].markdown("**Owner**")
+    h_elements[col_idx+2].markdown("**Last Note**")
+    h_elements[col_idx+3].markdown("**New Update**")
+    h_elements[col_idx+4].markdown("**Action**")
+    
+    st.markdown("<hr style='margin:0px 0px 10px 0px; border-top: 2px solid #555;' />", unsafe_allow_html=True)
+    
+    # ====================================================
+    # INLINE QUICK ADD ROW
+    # ====================================================
+    add_elements = st.columns(grid_weights)
+    
+    new_group = add_elements[0].text_input("Add Group", key="add_group", placeholder="GROUP / CLASS...", label_visibility="collapsed")
+    new_med = add_elements[0].text_input("Add Item Name", key="add_med", placeholder="Item Description / Spec...", label_visibility="collapsed")
+    
+    new_soh = add_elements[1].number_input("Add SOH", min_value=0, step=1, value=0, key="add_soh", label_visibility="collapsed")
+    new_transit = add_elements[2].number_input("Add Transit", min_value=0, step=1, value=0, key="add_transit", label_visibility="collapsed")
+    new_amc = add_elements[3].number_input("Add AMC", min_value=0, step=1, value=0, key="add_amc", label_visibility="collapsed")
+    new_req = add_elements[4].number_input("Add Request", min_value=0, step=1, value=0, key="add_req", label_visibility="collapsed")
+    
+    new_custom_inputs = {}
+    col_idx = 5
+    for c_name in custom_cols:
+        new_custom_inputs[c_name] = add_elements[col_idx].text_input(f"Add {c_name}", key=f"add_custom_{c_name}", placeholder=f"{c_name}...", label_visibility="collapsed")
+        col_idx += 1
         
-        # ====================================================
-        # INLINE QUICK ADD ROW (Displays right under table headers)
-        # ====================================================
-        add_col1, add_col2, add_col3, add_col4, add_col5, add_col6, add_col7, add_col8, add_col9, add_col10 = st.columns([1.8, 0.5, 0.9, 0.5, 0.8, 1.0, 1.0, 1.4, 2.0, 0.5])
-        
-        # Custom input stack inside Column 1
-        new_group = add_col1.text_input("Add Group", key="add_group", placeholder="DRUG GROUP...", label_visibility="collapsed")
-        new_med = add_col1.text_input("Add Medicine", key="add_med", placeholder="Strength/Formulation...", label_visibility="collapsed")
-        
-        new_soh = add_col2.number_input("Add SOH", min_value=0, step=1, value=0, key="add_soh", label_visibility="collapsed")
-        new_transit = add_col3.number_input("Add Transit", min_value=0, step=1, value=0, key="add_transit", label_visibility="collapsed")
-        new_amc = add_col4.number_input("Add AMC", min_value=0, step=1, value=0, key="add_amc", label_visibility="collapsed")
-        new_req = add_col5.number_input("Add Request", min_value=0, step=1, value=0, key="add_req", label_visibility="collapsed")
-        
-        status_options = ["Open", "In Progress", "Waiting Supplier", "Escalated", "Completed"]
-        new_status = add_col6.selectbox("Add Status", status_options, index=0, key="add_status", label_visibility="collapsed")
-        new_owner = add_col7.text_input("Add Owner", placeholder="Owner...", key="add_owner", label_visibility="collapsed")
-        
-        add_col8.markdown("<span style='color: #ff4b4b; font-weight: bold;'>New Row Entry</span>", unsafe_allow_html=True)
-        new_comment = add_col9.text_input("Add Comment", placeholder="Initial update note...", key="add_comment", label_visibility="collapsed")
-        
-        # Save inline entry logic
-        if add_col10.button("➕", key="btn_add_new_row", help="Insert this new entry row into the tracker"):
-            if not new_group.strip() or not new_med.strip():
-                st.error("Both 'Drug Group' and 'Medicine Description' are required!")
+    status_options = ["Open", "In Progress", "Waiting Supplier", "Escalated", "Completed"]
+    new_status = add_elements[col_idx].selectbox("Add Status", status_options, index=0, key="add_status", label_visibility="collapsed")
+    new_owner = add_elements[col_idx+1].text_input("Add Owner", placeholder="Owner...", key="add_owner", label_visibility="collapsed")
+    
+    add_elements[col_idx+2].markdown(f"<span style='color: #ff4b4b; font-weight: bold;'>New {active_category} Entry</span>", unsafe_allow_html=True)
+    new_comment = add_elements[col_idx+3].text_input("Add Comment", placeholder="Initial update note...", key="add_comment", label_visibility="collapsed")
+    
+    if add_elements[col_idx+4].button("➕", key="btn_add_new_row", help=f"Insert this entry into {active_category}"):
+        if not new_group.strip() or not new_med.strip():
+            st.error("Both Group Name and Item Description are required!")
+        else:
+            success = add_new_medicine(new_group.strip().upper(), new_med.strip(), new_soh, new_transit, new_amc, new_req, category=active_category, custom_fields_dict=new_custom_inputs)
+            if success:
+                comment_to_save = new_comment.strip() if new_comment.strip() else "Item manually added."
+                save_update(new_med.strip(), datetime.now().strftime("%Y-%m-%d %H:%M"), new_status, new_owner.strip(), comment_to_save)
+                
+                # RESET / CLEAR QUICK ADD INPUTS IN SESSION STATE
+                st.session_state["add_group"] = ""
+                st.session_state["add_med"] = ""
+                st.session_state["add_soh"] = 0
+                st.session_state["add_transit"] = 0
+                st.session_state["add_amc"] = 0
+                st.session_state["add_req"] = 0
+                st.session_state["add_owner"] = ""
+                st.session_state["add_comment"] = ""
+                for c_name in custom_cols:
+                    if f"add_custom_{c_name}" in st.session_state:
+                        st.session_state[f"add_custom_{c_name}"] = ""
+                
+                st.success(f"Added {new_med.strip()} to {active_category}!")
+                st.rerun()
             else:
-                success = add_new_medicine(new_group.strip().upper(), new_med.strip(), new_soh, new_transit, new_amc, new_req)
-                if success:
-                    comment_to_save = new_comment.strip() if new_comment.strip() else "Item manually added."
-                    save_update(new_med.strip(), datetime.now().strftime("%Y-%m-%d %H:%M"), new_status, new_owner.strip(), comment_to_save)
-                    st.success(f"Added {new_med.strip()}!")
-                    st.rerun()
-                else:
-                    st.error(f"Error: '{new_med.strip()}' already exists in your tracker.")
+                st.error(f"Error: '{new_med.strip()}' already exists in your database.")
 
-        st.markdown("<hr style='margin:10px 0px 15px 0px; border-top: 3px double #888;' />", unsafe_allow_html=True)
+    st.markdown("<hr style='margin:10px 0px 15px 0px; border-top: 3px double #888;' />", unsafe_allow_html=True)
 
-        # ====================================================
-        # EXISTING DIRECTORY ROW RECORDS LOOP
-        # ====================================================
+    # ====================================================
+    # EXISTING RECORDS LOOP
+    # ====================================================
+    if len(records) == 0:
+        st.info(f"No items currently registered under '{active_category}'. Use the inline row above to add one.")
+    else:
         for idx, row in records.iterrows():
             medicine = row["medicine_name"]
             group_label = row["base_drug_name"]
             
-            r_col1, r_col2, r_col3, r_col4, r_col5, r_col6, r_col7, r_col8, r_col9, r_col10 = st.columns([1.8, 0.5, 0.9, 0.5, 0.8, 1.0, 1.0, 1.4, 2.0, 0.5])
+            r_elements = st.columns(grid_weights)
             
-            r_col1.write(f"**{group_label}**\n\n{medicine}")
+            r_elements[0].write(f"**{group_label}**\n\n{medicine}")
             
-            # Numeric inputs (step=1 enforces integers cleanly)
-            soh = r_col2.number_input("SOH", value=int(row["stock_on_hand"]), step=1, key=f"soh_{medicine}", label_visibility="collapsed")
-            transit = r_col3.number_input("Transit", value=int(row["in_transit"]), step=1, key=f"transit_{medicine}", label_visibility="collapsed")
-            amc = r_col4.number_input("AMC", value=int(row["amc"]), step=1, key=f"amc_{medicine}", label_visibility="collapsed")
-            request_qty = r_col5.number_input("Request", value=int(row["request_qty"]), step=1, key=f"request_{medicine}", label_visibility="collapsed")
+            soh = r_elements[1].number_input("SOH", value=int(row["stock_on_hand"]), step=1, key=f"soh_{medicine}", label_visibility="collapsed")
+            transit = r_elements[2].number_input("Transit", value=int(row["in_transit"]), step=1, key=f"transit_{medicine}", label_visibility="collapsed")
+            amc = r_elements[3].number_input("AMC", value=int(row["amc"]), step=1, key=f"amc_{medicine}", label_visibility="collapsed")
+            request_qty = r_elements[4].number_input("Request", value=int(row["request_qty"]), step=1, key=f"request_{medicine}", label_visibility="collapsed")
             
-            # Status and Owner selectors
+            existing_custom_dict = json.loads(row["custom_fields"]) if row["custom_fields"] else {}
+            updated_custom_dict = {}
+            
+            col_idx = 5
+            for c_name in custom_cols:
+                val = existing_custom_dict.get(c_name, "")
+                updated_custom_dict[c_name] = r_elements[col_idx].text_input(c_name, value=str(val), key=f"custom_{c_name}_{medicine}", label_visibility="collapsed")
+                col_idx += 1
+                
             status_options = ["Open", "In Progress", "Waiting Supplier", "Escalated", "Completed"]
             def_idx = status_options.index(row["status"]) if row["status"] in status_options else 0
-            selected_status = r_col6.selectbox("Status", status_options, index=def_idx, key=f"status_{medicine}", label_visibility="collapsed")
-            current_owner = r_col7.text_input("Owner", value=row["owner"], key=f"owner_{medicine}", label_visibility="collapsed")
+            selected_status = r_elements[col_idx].selectbox("Status", status_options, index=def_idx, key=f"status_{medicine}", label_visibility="collapsed")
+            current_owner = r_elements[col_idx+1].text_input("Owner", value=row["owner"], key=f"owner_{medicine}", label_visibility="collapsed")
             
-            # Show date and time of last updated comment cleanly
-            r_col8.caption(f"⏱ *({row['last_updated']})*: {row['last_comment']}")
-            new_comment = r_col9.text_input("New Comment", key=f"comment_{medicine}", label_visibility="collapsed", placeholder="Type update...")
+            r_elements[col_idx+2].caption(f"⏱ *({row['last_updated']})*: {row['last_comment']}")
+            new_comment = r_elements[col_idx+3].text_input("New Comment", key=f"comment_{medicine}", label_visibility="collapsed", placeholder="Type update...")
             
-            # INDIVIDUAL ROW SAVE ACTION
-            if r_col10.button("💾", key=f"save_{medicine}", help=f"Save changes for {medicine}"):
-                update_stock_levels(medicine, soh, transit, amc, request_qty)
+            act_col1, act_col2 = r_elements[col_idx+4].columns(2)
+            
+            # SAVE ACTION
+            if act_col1.button("💾", key=f"save_{medicine}", help=f"Save changes for {medicine}"):
+                update_stock_levels(medicine, soh, transit, amc, request_qty, custom_fields_dict=updated_custom_dict)
                 
-                # Check metrics or metadata changes to append smart history log entry
                 changed_metrics = (soh != int(row["stock_on_hand"]) or 
                                    transit != int(row["in_transit"]) or 
                                    amc != int(row["amc"]) or 
-                                   request_qty != int(row["request_qty"]))
+                                   request_qty != int(row["request_qty"]) or
+                                   updated_custom_dict != existing_custom_dict)
                 changed_meta = (selected_status != row["status"] or current_owner != row["owner"] or new_comment.strip() != "")
                 
                 if changed_metrics or changed_meta:
@@ -266,17 +395,28 @@ with tabs[1]:
                         if current_owner != row["owner"]: changes.append(f"Owner: {row['owner'] or 'None'} ➔ {current_owner}")
                         if soh != int(row["stock_on_hand"]): changes.append(f"SOH: {row['stock_on_hand']} ➔ {soh}")
                         if transit != int(row["in_transit"]): changes.append(f"Transit: {row['in_transit']} ➔ {transit}")
-                        if amc != int(row["amc"]): changes.append(f"AMC: {row['amc']} ➔ {amc}")
-                        if request_qty != int(row["request_qty"]): changes.append(f"Request: {row['request_qty']} ➔ {request_qty}")
                         comment_to_save = ", ".join(changes) if changes else "Updated parameters."
                     
-                    # Generates time tracking accurately inside the database updates log
                     save_update(medicine, datetime.now().strftime("%Y-%m-%d %H:%M"), selected_status, current_owner, comment_to_save)
                 
                 st.success(f"Updated {medicine}!")
                 st.rerun()
+                
+            # DELETE ACTION WITH AUDIT CONFIRMATION
+            with act_col2.popover("🗑️"):
+                st.markdown(f"### Delete Item")
+                st.warning(f"Are you sure you want to delete **'{medicine}'**?")
+                deleter_name = st.text_input("Your Name (Required for audit log)", key=f"deleter_name_{medicine}").strip()
+                
+                if st.button("🔴 Confirm Delete", key=f"confirm_del_{medicine}", type="primary"):
+                    if not deleter_name:
+                        st.error("Please enter your name to confirm deletion.")
+                    else:
+                        delete_date_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        delete_medicine(medicine, deleter_name, delete_date_time)
+                        st.success(f"Item '{medicine}' deleted by {deleter_name}.")
+                        st.rerun()
             
-            # Full Change Log Timeline Expander
             with st.expander("📜 View Full Past Change Log Timeline", expanded=False):
                 history_df = get_medicine_history(medicine)
                 if len(history_df) <= 1:
@@ -292,8 +432,10 @@ with tabs[1]:
 # TAB 3: MASTER IMPORT PORTAL
 # ====================================================
 with tabs[2]:
-    st.subheader("Seed Baseline Tracking Directory")
-    uploaded_file = st.file_uploader("Upload Cancer Medicines Report Workbook", type=["xls", "xlsx"])
+    st.subheader(f"Seed Baseline Directory — {active_category}")
+    st.write(f"Upload an Excel sheet formatted identically to seed or update records inside **{active_category}**.")
+    
+    uploaded_file = st.file_uploader(f"Upload Workbook for {active_category}", type=["xls", "xlsx"])
 
     if uploaded_file:
         try:
@@ -303,9 +445,11 @@ with tabs[2]:
             df = load_excel(uploaded_file, sheet_name=selected_sheet)
             df_prepared = prepare_medicines(df)
             
-            if st.button("🚀 Confirm and Load Records", type="primary"):
+            df_prepared["category"] = active_category
+            
+            if st.button(f"🚀 Import Records into {active_category}", type="primary"):
                 save_medicines(df_prepared)
-                st.success("Master medicine inventory directory updated successfully!")
+                st.success(f"Successfully loaded records into '{active_category}'!")
                 st.rerun()
             st.dataframe(df_prepared, use_container_width=True)
         except Exception as e:
