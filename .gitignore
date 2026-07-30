@@ -1,0 +1,4 @@
+*.db
+medicines.db
+__pycache__/
+.vscode/
