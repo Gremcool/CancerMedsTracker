@@ -21,7 +21,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Custom CSS styling for non-wrapping headers, clean badges, and Green/Red action buttons
+# Custom CSS styling for non-wrapping headers, clean badges, red editor header, and Green/Red action buttons
 st.markdown("""
     <style>
         /* Top padding to clear Streamlit header banner */
@@ -45,7 +45,7 @@ st.markdown("""
             margin-top: -0.6rem !important;
             padding-top: 0rem !important;
         }
-        /* Ensure selectbox options like Escalated fit cleanly */
+        /* Ensure selectbox options fit cleanly */
         div[data-baseweb="select"] {
             min-width: 135px !important;
         }
@@ -130,6 +130,18 @@ st.markdown("""
             border-radius: 6px;
             font-weight: bold;
             display: inline-block;
+        }
+        
+        /* ADVANCED DETAILS EDITOR RED HEADER BANNER */
+        .adv-header-banner {
+            background-color: #dc3545 !important;
+            color: #ffffff !important;
+            padding: 8px 14px !important;
+            border-radius: 6px 6px 0px 0px !important;
+            font-weight: bold !important;
+            font-size: 1rem !important;
+            margin-top: 8px !important;
+            margin-bottom: 0px !important;
         }
         
         /* DISTINCT ACTION BUTTON STYLING (Green Save Icon, Red Delete Popover) */
@@ -301,6 +313,177 @@ def get_board_column_weights(custom_cols_count):
         weights.append(1.0)
     weights.extend([1.4, 1.2, 1.8, 1.8, 0.6, 0.6])
     return weights
+
+# ====================================================
+# ISOLATED ROW FRAGMENT (LIGHTNING FAST INSTANT TOGGLE)
+# ====================================================
+@st.fragment
+def render_item_row(row, custom_cols, status_options, grid_weights, active_category):
+    medicine = row["medicine_name"]
+    group_label = row["base_drug_name"]
+    
+    # PRE-INSTANTIATION RESET CHECK: Unchecks checkbox & clears cached state BEFORE widgets render
+    if st.session_state.get(f"reset_row_{medicine}"):
+        st.session_state[f"chk_{medicine}"] = False
+        for k in [f"soh_{medicine}", f"transit_{medicine}", f"amc_{medicine}", f"request_{medicine}", 
+                  f"status_{medicine}", f"owner_{medicine}", f"comment_{medicine}",
+                  f"adv_group_{medicine}", f"adv_name_{medicine}", f"adv_status_{medicine}", 
+                  f"adv_owner_{medicine}", f"adv_soh_{medicine}", f"adv_transit_{medicine}", 
+                  f"adv_amc_{medicine}", f"adv_req_{medicine}", f"adv_note_{medicine}"]:
+            if k in st.session_state:
+                del st.session_state[k]
+        for c_name in custom_cols:
+            for ck in [f"custom_{c_name}_{medicine}", f"adv_custom_{c_name}_{medicine}"]:
+                if ck in st.session_state:
+                    del st.session_state[ck]
+        del st.session_state[f"reset_row_{medicine}"]
+
+    chk_w = grid_weights[0]
+    form_weights = grid_weights[1:-1]
+    del_w = grid_weights[-1]
+    
+    col_chk, col_form, col_del = st.columns([chk_w, sum(form_weights), del_w])
+    
+    # 1. Checkbox outside form for instant local interaction
+    with col_chk:
+        is_selected = st.checkbox("", key=f"chk_{medicine}", label_visibility="collapsed")
+
+    # 2. Row Form contains all inline inputs and green save button
+    with col_form:
+        with st.form(key=f"row_form_{medicine}", border=False):
+            f_elements = st.columns(form_weights)
+            
+            f_elements[0].write(f"**{group_label}**\n\n{medicine}")
+            
+            soh_raw = f_elements[1].text_input("SOH", value=f"{int(row['stock_on_hand']):,}", key=f"soh_{medicine}", label_visibility="collapsed")
+            transit_raw = f_elements[2].text_input("Inbound", value=f"{int(row['in_transit']):,}", key=f"transit_{medicine}", label_visibility="collapsed")
+            amc_raw = f_elements[3].text_input("AMC", value=f"{int(row['amc']):,}", key=f"amc_{medicine}", label_visibility="collapsed")
+            request_qty_raw = f_elements[4].text_input("Request", value=f"{int(row['request_qty']):,}", key=f"request_{medicine}", label_visibility="collapsed")
+            
+            soh = parse_number(soh_raw)
+            transit = parse_number(transit_raw)
+            amc = parse_number(amc_raw)
+            request_qty = parse_number(request_qty_raw)
+            
+            existing_custom_dict = json.loads(row["custom_fields"]) if row["custom_fields"] else {}
+            updated_custom_dict = {}
+            
+            col_idx = 5
+            for c_name in custom_cols:
+                val = existing_custom_dict.get(c_name, "")
+                updated_custom_dict[c_name] = f_elements[col_idx].text_input(c_name, value=str(val), key=f"custom_{c_name}_{medicine}", label_visibility="collapsed")
+                col_idx += 1
+                
+            def_idx = status_options.index(row["status"]) if row["status"] in status_options else 0
+            selected_status = f_elements[col_idx].selectbox("Status", status_options, index=def_idx, key=f"status_{medicine}", label_visibility="collapsed")
+            current_owner = f_elements[col_idx+1].text_input("Owner", value=row["owner"], key=f"owner_{medicine}", label_visibility="collapsed")
+            
+            f_elements[col_idx+2].caption(f"⏱ *({row['last_updated']})*:\n{row['last_comment']}")
+            new_comment = f_elements[col_idx+3].text_input("New Comment", key=f"comment_{medicine}", label_visibility="collapsed", placeholder="Type update...")
+            
+            # Green Save Form Submit Button
+            f_elements[col_idx+4].markdown('<div class="save-btn-container">', unsafe_allow_html=True)
+            save_submitted = f_elements[col_idx+4].form_submit_button("💾", help=f"Save changes for {medicine}")
+            f_elements[col_idx+4].markdown('</div>', unsafe_allow_html=True)
+            
+            if save_submitted:
+                update_stock_levels(medicine, soh, transit, amc, request_qty, custom_fields_dict=updated_custom_dict)
+                
+                comment_to_save = new_comment.strip()
+                if not comment_to_save:
+                    changes = []
+                    if selected_status != row["status"]: changes.append(f"Status: {row['status']} ➔ {selected_status}")
+                    if current_owner != row["owner"]: changes.append(f"Owner: {row['owner'] or 'None'} ➔ {current_owner}")
+                    if soh != int(row["stock_on_hand"]): changes.append(f"SOH: {int(row['stock_on_hand']):,} ➔ {soh:,}")
+                    if transit != int(row["in_transit"]): changes.append(f"Inbound: {int(row['in_transit']):,} ➔ {transit:,}")
+                    comment_to_save = ", ".join(changes) if changes else "Updated parameters."
+                
+                save_update(medicine, datetime.now().strftime("%Y-%m-%d %H:%M"), selected_status, current_owner, comment_to_save)
+                st.session_state[f"reset_row_{medicine}"] = True
+                st.success(f"Saved & updated details for '{medicine}'!")
+                st.rerun()
+
+    # 3. Red Delete Popover Button
+    with col_del:
+        col_del.markdown('<div class="delete-btn-container">', unsafe_allow_html=True)
+        with col_del.popover("🗑️", help=f"Delete {medicine}"):
+            st.markdown(f"### Delete Item")
+            st.warning(f"Are you sure you want to delete **'{medicine}'**?")
+            deleter_name = st.text_input("Your Name (Required for audit log)", key=f"deleter_name_{medicine}").strip()
+            
+            if st.button("Confirm Delete", key=f"confirm_del_{medicine}", type="primary"):
+                if not deleter_name:
+                    st.error("Please enter your name to confirm deletion.")
+                else:
+                    delete_date_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    delete_medicine(medicine, deleter_name, delete_date_time)
+                    st.success(f"Item '{medicine}' deleted by {deleter_name}.")
+                    st.rerun()
+        col_del.markdown('</div>', unsafe_allow_html=True)
+
+    # ADVANCED DETAILS EDITOR FORM (Renders instantly inside fragment)
+    if is_selected:
+        st.markdown(f'<div class="adv-header-banner">✏️ Advanced Details Editor — {medicine}</div>', unsafe_allow_html=True)
+        with st.form(key=f"adv_form_{medicine}"):
+            st.markdown("#### Edit Standard Details")
+            
+            adv_c1, adv_c2, adv_c3, adv_c4 = st.columns(4)
+            adv_group = adv_c1.text_input("Group / Class Name", value=group_label, key=f"adv_group_{medicine}")
+            adv_name = adv_c2.text_input("Item Specification / Full Description", value=medicine, key=f"adv_name_{medicine}")
+            adv_status = adv_c3.selectbox("Current Status", status_options, index=def_idx, key=f"adv_status_{medicine}")
+            adv_owner = adv_c4.text_input("Responsible Officer / Owner", value=row["owner"], key=f"adv_owner_{medicine}")
+            
+            st.markdown("##### Stock & Quantities")
+            q_c1, q_c2, q_c3, q_c4 = st.columns(4)
+            adv_soh_raw = q_c1.text_input("Stock On Hand (SOH)", value=f"{int(row['stock_on_hand']):,}", key=f"adv_soh_{medicine}")
+            adv_transit_raw = q_c2.text_input("Inbound / In Transit", value=f"{int(row['in_transit']):,}", key=f"adv_transit_{medicine}")
+            adv_amc_raw = q_c3.text_input("Average Monthly Consumption (AMC)", value=f"{int(row['amc']):,}", key=f"adv_amc_{medicine}")
+            adv_req_raw = q_c4.text_input("Request Quantity", value=f"{int(row['request_qty']):,}", key=f"adv_req_{medicine}")
+            
+            adv_soh = parse_number(adv_soh_raw)
+            adv_transit = parse_number(adv_transit_raw)
+            adv_amc = parse_number(adv_amc_raw)
+            adv_req = parse_number(adv_req_raw)
+            
+            adv_custom_dict = {}
+            if custom_cols:
+                st.markdown("##### Dynamic Custom Attributes")
+                cust_cols_elements = st.columns(min(len(custom_cols), 4))
+                for idx_c, c_name in enumerate(custom_cols):
+                    val_c = existing_custom_dict.get(c_name, "")
+                    target_col = cust_cols_elements[idx_c % 4]
+                    adv_custom_dict[c_name] = target_col.text_input(c_name, value=str(val_c), key=f"adv_custom_{c_name}_{medicine}")
+            else:
+                adv_custom_dict = updated_custom_dict
+
+            adv_note = st.text_area("Update Log Note", placeholder="Type detailed update note...", key="adv_note_" + medicine)
+            
+            adv_submitted = st.form_submit_button("💾 Save All Details", type="primary", help="Save all details")
+            
+            if adv_submitted:
+                update_stock_levels(medicine, adv_soh, adv_transit, adv_amc, adv_req, custom_fields_dict=adv_custom_dict)
+                comment_to_save = adv_note.strip() if adv_note.strip() else "Updated via Advanced Details Editor."
+                save_update(medicine, datetime.now().strftime("%Y-%m-%d %H:%M"), adv_status, adv_owner, comment_to_save)
+                
+                # Flag row reset on rerun to uncheck box (collapse window) & sync inline row textboxes
+                st.session_state[f"reset_row_{medicine}"] = True
+                st.success(f"Saved & updated inline view for '{medicine}'!")
+                st.rerun()
+
+    # LAZY-LOAD HISTORY EXPANDER: Only queries SQLite when timeline is opened
+    with st.expander("📜 View Full Past Change Log Timeline", expanded=False):
+        if is_selected:
+            history_df = get_medicine_history(medicine)
+            if len(history_df) <= 1:
+                st.caption("No older historical timeline records found.")
+            else:
+                for _, log in history_df.iloc[1:].iterrows():
+                    st.markdown(f"🗓️ **{log['update_date']}** | Status: `{log['status']}` | Owner: `{log['owner'] or '-'}`")
+                    st.markdown(f"> *{log['comment']}*")
+        else:
+            st.caption("Select checkbox to view complete change history.")
+
+    st.markdown("<hr style='margin:5px 0px; border-top: 1px dashed #444;' />", unsafe_allow_html=True)
 
 # ====================================================
 # TAB 1: ACTION DASHBOARD
@@ -574,172 +757,16 @@ with tabs[1]:
 
     st.markdown("<hr style='margin:10px 0px 15px 0px; border-top: 3px double #888;' />", unsafe_allow_html=True)
 
-    # EXISTING RECORDS LOOP
+    # EXISTING RECORDS LOOP (Renders isolated row fragments for sub-second checkbox responsiveness)
     if len(records) == 0:
         if search_query:
             st.warning(f"No items match your search for **'{search_query}'** in {active_category}.")
         else:
             st.info(f"No items currently registered under '{active_category}'. Use the inline row above to add one.")
     else:
+        status_options = ["Open", "In Progress", "Waiting Supplier", "Escalated", "Completed"]
         for idx, row in records.iterrows():
-            medicine = row["medicine_name"]
-            group_label = row["base_drug_name"]
-            
-            # PRE-INSTANTIATION RESET CHECK:
-            # Unchecks checkbox and clears cached input state BEFORE widgets render
-            if st.session_state.get(f"reset_row_{medicine}"):
-                st.session_state[f"chk_{medicine}"] = False
-                for k in [f"soh_{medicine}", f"transit_{medicine}", f"amc_{medicine}", f"request_{medicine}", 
-                          f"status_{medicine}", f"owner_{medicine}", f"comment_{medicine}",
-                          f"adv_group_{medicine}", f"adv_name_{medicine}", f"adv_status_{medicine}", 
-                          f"adv_owner_{medicine}", f"adv_soh_{medicine}", f"adv_transit_{medicine}", 
-                          f"adv_amc_{medicine}", f"adv_req_{medicine}", f"adv_note_{medicine}"]:
-                    if k in st.session_state:
-                        del st.session_state[k]
-                for c_name in custom_cols:
-                    for ck in [f"custom_{c_name}_{medicine}", f"adv_custom_{c_name}_{medicine}"]:
-                        if ck in st.session_state:
-                            del st.session_state[ck]
-                del st.session_state[f"reset_row_{medicine}"]
-
-            inline_weights = grid_weights[:-1]
-            delete_weight = grid_weights[-1]
-            
-            row_main_col, row_del_col = st.columns([sum(inline_weights), delete_weight])
-            
-            # 1. Checkbox outside form so clicking it toggles the expander immediately
-            with row_main_col:
-                with st.form(key=f"row_form_{medicine}", border=False):
-                    f_elements = st.columns(inline_weights)
-                    
-                    is_selected = f_elements[0].checkbox("", key=f"chk_{medicine}", label_visibility="collapsed")
-                    f_elements[1].write(f"**{group_label}**\n\n{medicine}")
-                    
-                    soh_raw = f_elements[2].text_input("SOH", value=f"{int(row['stock_on_hand']):,}", key=f"soh_{medicine}", label_visibility="collapsed")
-                    transit_raw = f_elements[3].text_input("Inbound", value=f"{int(row['in_transit']):,}", key=f"transit_{medicine}", label_visibility="collapsed")
-                    amc_raw = f_elements[4].text_input("AMC", value=f"{int(row['amc']):,}", key=f"amc_{medicine}", label_visibility="collapsed")
-                    request_qty_raw = f_elements[5].text_input("Request", value=f"{int(row['request_qty']):,}", key=f"request_{medicine}", label_visibility="collapsed")
-                    
-                    soh = parse_number(soh_raw)
-                    transit = parse_number(transit_raw)
-                    amc = parse_number(amc_raw)
-                    request_qty = parse_number(request_qty_raw)
-                    
-                    existing_custom_dict = json.loads(row["custom_fields"]) if row["custom_fields"] else {}
-                    updated_custom_dict = {}
-                    
-                    col_idx = 6
-                    for c_name in custom_cols:
-                        val = existing_custom_dict.get(c_name, "")
-                        updated_custom_dict[c_name] = f_elements[col_idx].text_input(c_name, value=str(val), key=f"custom_{c_name}_{medicine}", label_visibility="collapsed")
-                        col_idx += 1
-                        
-                    def_idx = status_options.index(row["status"]) if row["status"] in status_options else 0
-                    selected_status = f_elements[col_idx].selectbox("Status", status_options, index=def_idx, key=f"status_{medicine}", label_visibility="collapsed")
-                    current_owner = f_elements[col_idx+1].text_input("Owner", value=row["owner"], key=f"owner_{medicine}", label_visibility="collapsed")
-                    
-                    f_elements[col_idx+2].caption(f"⏱ *({row['last_updated']})*:\n{row['last_comment']}")
-                    new_comment = f_elements[col_idx+3].text_input("New Comment", key=f"comment_{medicine}", label_visibility="collapsed", placeholder="Type update...")
-                    
-                    # Green Save Form Submit Button
-                    f_elements[col_idx+4].markdown('<div class="save-btn-container">', unsafe_allow_html=True)
-                    save_submitted = f_elements[col_idx+4].form_submit_button("💾", help=f"Save changes for {medicine}")
-                    f_elements[col_idx+4].markdown('</div>', unsafe_allow_html=True)
-                    
-                    if save_submitted:
-                        update_stock_levels(medicine, soh, transit, amc, request_qty, custom_fields_dict=updated_custom_dict)
-                        
-                        comment_to_save = new_comment.strip()
-                        if not comment_to_save:
-                            changes = []
-                            if selected_status != row["status"]: changes.append(f"Status: {row['status']} ➔ {selected_status}")
-                            if current_owner != row["owner"]: changes.append(f"Owner: {row['owner'] or 'None'} ➔ {current_owner}")
-                            if soh != int(row["stock_on_hand"]): changes.append(f"SOH: {int(row['stock_on_hand']):,} ➔ {soh:,}")
-                            if transit != int(row["in_transit"]): changes.append(f"Inbound: {int(row['in_transit']):,} ➔ {transit:,}")
-                            comment_to_save = ", ".join(changes) if changes else "Updated parameters."
-                        
-                        save_update(medicine, datetime.now().strftime("%Y-%m-%d %H:%M"), selected_status, current_owner, comment_to_save)
-                        st.session_state[f"reset_row_{medicine}"] = True
-                        st.success(f"Saved & updated details for '{medicine}'!")
-                        st.rerun()
-
-            # 2. Red Delete Popover Button (Outside form)
-            with row_del_col:
-                row_del_col.markdown('<div class="delete-btn-container">', unsafe_allow_html=True)
-                with row_del_col.popover("🗑️", help=f"Delete {medicine}"):
-                    st.markdown(f"### Delete Item")
-                    st.warning(f"Are you sure you want to delete **'{medicine}'**?")
-                    deleter_name = st.text_input("Your Name (Required for audit log)", key=f"deleter_name_{medicine}").strip()
-                    
-                    if st.button("Confirm Delete", key=f"confirm_del_{medicine}", type="primary"):
-                        if not deleter_name:
-                            st.error("Please enter your name to confirm deletion.")
-                        else:
-                            delete_date_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-                            delete_medicine(medicine, deleter_name, delete_date_time)
-                            st.success(f"Item '{medicine}' deleted by {deleter_name}.")
-                            st.rerun()
-                row_del_col.markdown('</div>', unsafe_allow_html=True)
-
-            # ADVANCED DETAILS EDITOR FORM
-            if is_selected:
-                with st.expander(f"✏️ Advanced Details Editor — {medicine}", expanded=True):
-                    with st.form(key=f"adv_form_{medicine}"):
-                        st.markdown("#### Edit Standard Details")
-                        
-                        adv_c1, adv_c2, adv_c3, adv_c4 = st.columns(4)
-                        adv_group = adv_c1.text_input("Group / Class Name", value=group_label, key=f"adv_group_{medicine}")
-                        adv_name = adv_c2.text_input("Item Specification / Full Description", value=medicine, key=f"adv_name_{medicine}")
-                        adv_status = adv_c3.selectbox("Current Status", status_options, index=def_idx, key=f"adv_status_{medicine}")
-                        adv_owner = adv_c4.text_input("Responsible Officer / Owner", value=row["owner"], key=f"adv_owner_{medicine}")
-                        
-                        st.markdown("##### Stock & Quantities")
-                        q_c1, q_c2, q_c3, q_c4 = st.columns(4)
-                        adv_soh_raw = q_c1.text_input("Stock On Hand (SOH)", value=f"{int(row['stock_on_hand']):,}", key=f"adv_soh_{medicine}")
-                        adv_transit_raw = q_c2.text_input("Inbound / In Transit", value=f"{int(row['in_transit']):,}", key=f"adv_transit_{medicine}")
-                        adv_amc_raw = q_c3.text_input("Average Monthly Consumption (AMC)", value=f"{int(row['amc']):,}", key=f"adv_amc_{medicine}")
-                        adv_req_raw = q_c4.text_input("Request Quantity", value=f"{int(row['request_qty']):,}", key=f"adv_req_{medicine}")
-                        
-                        adv_soh = parse_number(adv_soh_raw)
-                        adv_transit = parse_number(adv_transit_raw)
-                        adv_amc = parse_number(adv_amc_raw)
-                        adv_req = parse_number(adv_req_raw)
-                        
-                        adv_custom_dict = {}
-                        if custom_cols:
-                            st.markdown("##### Dynamic Custom Attributes")
-                            cust_cols_elements = st.columns(min(len(custom_cols), 4))
-                            for idx_c, c_name in enumerate(custom_cols):
-                                val_c = existing_custom_dict.get(c_name, "")
-                                target_col = cust_cols_elements[idx_c % 4]
-                                adv_custom_dict[c_name] = target_col.text_input(c_name, value=str(val_c), key=f"adv_custom_{c_name}_{medicine}")
-                        else:
-                            adv_custom_dict = updated_custom_dict
-
-                        adv_note = st.text_area("Update Log Note", placeholder="Type detailed update note...", key="adv_note_" + medicine)
-                        
-                        adv_submitted = st.form_submit_button("💾 Save All Details", type="primary", help="Save all details")
-                        
-                        if adv_submitted:
-                            update_stock_levels(medicine, adv_soh, adv_transit, adv_amc, adv_req, custom_fields_dict=adv_custom_dict)
-                            comment_to_save = adv_note.strip() if adv_note.strip() else "Updated via Advanced Details Editor."
-                            save_update(medicine, datetime.now().strftime("%Y-%m-%d %H:%M"), adv_status, adv_owner, comment_to_save)
-                            
-                            # Flag row reset on rerun to uncheck box (collapse window) & sync inline row textboxes
-                            st.session_state[f"reset_row_{medicine}"] = True
-                            st.success(f"Saved & updated inline view for '{medicine}'!")
-                            st.rerun()
-
-            with st.expander("📜 View Full Past Change Log Timeline", expanded=False):
-                history_df = get_medicine_history(medicine)
-                if len(history_df) <= 1:
-                    st.caption("No older historical timeline records found.")
-                else:
-                    for _, log in history_df.iloc[1:].iterrows():
-                        st.markdown(f"🗓️ **{log['update_date']}** | Status: `{log['status']}` | Owner: `{log['owner'] or '-'}`")
-                        st.markdown(f"> *{log['comment']}*")
-            
-            st.markdown("<hr style='margin:5px 0px; border-top: 1px dashed #444;' />", unsafe_allow_html=True)
+            render_item_row(row, custom_cols, status_options, grid_weights, active_category)
 
 # ====================================================
 # TAB 3: MASTER IMPORT PORTAL
