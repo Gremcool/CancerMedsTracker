@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import re
+import io
 
 # Ensure local imports resolve safely
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -178,6 +179,13 @@ def parse_number(val):
     clean_str = re.sub(r'[^\d-]', '', str(val))
     return int(clean_str) if clean_str else 0
 
+# Helper function to convert a DataFrame into a downloadable Excel binary buffer
+def convert_df_to_excel(df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Inventory Export')
+    return output.getvalue()
+
 # Helper function to render clean color status badges
 def render_status_badge(status_str):
     if status_str == "Completed":
@@ -245,16 +253,41 @@ with c_bar3.popover("⚙️ Custom Columns"):
 st.title(f"📂 {active_category} Management")
 
 # ====================================================
-# QUICK ITEM & STATUS SEARCH BAR
+# QUICK ITEM SEARCH BAR & GLOBAL EXPORT BUTTON
 # ====================================================
-st.markdown('<div class="search-box-container">', unsafe_allow_html=True)
-search_query = st.text_input(
-    "🔍 Search Item or Status",
-    placeholder="🔎 Search by Item Name, Group, Owner, or Status (e.g. Escalated, Completed, Open)...",
-    key="global_item_search",
-    label_visibility="collapsed"
-).strip().lower()
-st.markdown('</div>', unsafe_allow_html=True)
+s_col1, s_col2 = st.columns([4.0, 1.2])
+
+with s_col1:
+    st.markdown('<div class="search-box-container">', unsafe_allow_html=True)
+    search_query = st.text_input(
+        "🔍 Search Item or Status",
+        placeholder="🔎 Search by Item Name, Group, Owner, or Status (e.g. Escalated, Completed, Open)...",
+        key="global_item_search",
+        label_visibility="collapsed"
+    ).strip().lower()
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with s_col2:
+    export_data_df = get_latest_statuses(active_category)
+    if search_query and not export_data_df.empty:
+        export_data_df = export_data_df[
+            export_data_df["Drug Group"].astype(str).str.lower().str.contains(search_query, na=False) |
+            export_data_df["Medicine"].astype(str).str.lower().str.contains(search_query, na=False) |
+            export_data_df["Owner"].astype(str).str.lower().str.contains(search_query, na=False) |
+            export_data_df["Status"].astype(str).str.lower().str.contains(search_query, na=False)
+        ]
+
+    if not export_data_df.empty:
+        excel_bytes = convert_df_to_excel(export_data_df)
+        st.download_button(
+            label="📊 Export Excel",
+            data=excel_bytes,
+            file_name=f"{active_category}_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=True,
+            key="global_excel_export_btn"
+        )
 
 tabs = st.tabs([
     "📊 Summary Action Dashboard",
@@ -273,7 +306,20 @@ def get_board_column_weights(custom_cols_count):
 # TAB 1: ACTION DASHBOARD
 # ====================================================
 with tabs[0]:
-    st.subheader(f"Meeting Action Progress KPIs — {active_category}")
+    t1_head1, t1_head2 = st.columns([3.5, 1.2])
+    with t1_head1:
+        st.subheader(f"Meeting Action Progress KPIs — {active_category}")
+    with t1_head2:
+        if not export_data_df.empty:
+            st.download_button(
+                label="📊 Export Dashboard Data",
+                data=excel_bytes,
+                file_name=f"{active_category}_Dashboard_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="tab1_excel_export_btn",
+                use_container_width=True
+            )
+
     stats = get_dashboard_stats(active_category)
 
     k1, k2, k3, k4, k5, k6 = st.columns(6)
@@ -420,12 +466,20 @@ with tabs[0]:
 # TAB 2: LIVE REVIEW & ITEM-BY-ITEM CREATION / DELETE
 # ====================================================
 with tabs[1]:
-    if "flash_message" in st.session_state:
-        st.success(st.session_state["flash_message"])
-        del st.session_state["flash_message"]
+    t2_head1, t2_head2 = st.columns([3.5, 1.2])
+    with t2_head1:
+        st.subheader(f"Interactive Board Grid — {active_category}")
+    with t2_head2:
+        if not export_data_df.empty:
+            st.download_button(
+                label="📊 Export Grid Data",
+                data=excel_bytes,
+                file_name=f"{active_category}_Grid_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="tab2_excel_export_btn",
+                use_container_width=True
+            )
 
-    st.subheader(f"Interactive Board Grid — {active_category}")
-    
     records = get_medicines_grid(active_category)
     
     if search_query and not records.empty:
@@ -548,28 +602,23 @@ with tabs[1]:
                             del st.session_state[ck]
                 del st.session_state[f"reset_row_{medicine}"]
 
-            # SPLIT ROW COLUMNS: Checkbox (Outside Form) | Inline Form Inputs | Delete Popover (Outside Form)
-            chk_w = grid_weights[0]
-            form_weights = grid_weights[1:-1]
-            del_w = grid_weights[-1]
+            inline_weights = grid_weights[:-1]
+            delete_weight = grid_weights[-1]
             
-            col_chk, col_form, col_del = st.columns([chk_w, sum(form_weights), del_w])
+            row_main_col, row_del_col = st.columns([sum(inline_weights), delete_weight])
             
-            # 1. Checkbox outside form so clicking it toggles the expander immediately!
-            with col_chk:
-                is_selected = st.checkbox("", key=f"chk_{medicine}", label_visibility="collapsed")
-
-            # 2. Row Form contains all inline inputs and the green save button
-            with col_form:
+            # 1. Checkbox outside form so clicking it toggles the expander immediately
+            with row_main_col:
                 with st.form(key=f"row_form_{medicine}", border=False):
-                    f_elements = st.columns(form_weights)
+                    f_elements = st.columns(inline_weights)
                     
-                    f_elements[0].write(f"**{group_label}**\n\n{medicine}")
+                    is_selected = f_elements[0].checkbox("", key=f"chk_{medicine}", label_visibility="collapsed")
+                    f_elements[1].write(f"**{group_label}**\n\n{medicine}")
                     
-                    soh_raw = f_elements[1].text_input("SOH", value=f"{int(row['stock_on_hand']):,}", key=f"soh_{medicine}", label_visibility="collapsed")
-                    transit_raw = f_elements[2].text_input("Inbound", value=f"{int(row['in_transit']):,}", key=f"transit_{medicine}", label_visibility="collapsed")
-                    amc_raw = f_elements[3].text_input("AMC", value=f"{int(row['amc']):,}", key=f"amc_{medicine}", label_visibility="collapsed")
-                    request_qty_raw = f_elements[4].text_input("Request", value=f"{int(row['request_qty']):,}", key=f"request_{medicine}", label_visibility="collapsed")
+                    soh_raw = f_elements[2].text_input("SOH", value=f"{int(row['stock_on_hand']):,}", key=f"soh_{medicine}", label_visibility="collapsed")
+                    transit_raw = f_elements[3].text_input("Inbound", value=f"{int(row['in_transit']):,}", key=f"transit_{medicine}", label_visibility="collapsed")
+                    amc_raw = f_elements[4].text_input("AMC", value=f"{int(row['amc']):,}", key=f"amc_{medicine}", label_visibility="collapsed")
+                    request_qty_raw = f_elements[5].text_input("Request", value=f"{int(row['request_qty']):,}", key=f"request_{medicine}", label_visibility="collapsed")
                     
                     soh = parse_number(soh_raw)
                     transit = parse_number(transit_raw)
@@ -579,7 +628,7 @@ with tabs[1]:
                     existing_custom_dict = json.loads(row["custom_fields"]) if row["custom_fields"] else {}
                     updated_custom_dict = {}
                     
-                    col_idx = 5
+                    col_idx = 6
                     for c_name in custom_cols:
                         val = existing_custom_dict.get(c_name, "")
                         updated_custom_dict[c_name] = f_elements[col_idx].text_input(c_name, value=str(val), key=f"custom_{c_name}_{medicine}", label_visibility="collapsed")
@@ -614,10 +663,10 @@ with tabs[1]:
                         st.success(f"Saved & updated details for '{medicine}'!")
                         st.rerun()
 
-            # 3. Red Delete Popover Button (Outside form)
-            with col_del:
-                col_del.markdown('<div class="delete-btn-container">', unsafe_allow_html=True)
-                with col_del.popover("🗑️", help=f"Delete {medicine}"):
+            # 2. Red Delete Popover Button (Outside form)
+            with row_del_col:
+                row_del_col.markdown('<div class="delete-btn-container">', unsafe_allow_html=True)
+                with row_del_col.popover("🗑️", help=f"Delete {medicine}"):
                     st.markdown(f"### Delete Item")
                     st.warning(f"Are you sure you want to delete **'{medicine}'**?")
                     deleter_name = st.text_input("Your Name (Required for audit log)", key=f"deleter_name_{medicine}").strip()
@@ -630,7 +679,7 @@ with tabs[1]:
                             delete_medicine(medicine, deleter_name, delete_date_time)
                             st.success(f"Item '{medicine}' deleted by {deleter_name}.")
                             st.rerun()
-                col_del.markdown('</div>', unsafe_allow_html=True)
+                row_del_col.markdown('</div>', unsafe_allow_html=True)
 
             # ADVANCED DETAILS EDITOR FORM
             if is_selected:
