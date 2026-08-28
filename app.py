@@ -21,7 +21,12 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Custom CSS styling for non-wrapping headers, clean badges, red editor header, and Green/Red action buttons
+# Render transient toast notification if saved
+if "toast_msg" in st.session_state:
+    st.toast(st.session_state["toast_msg"], icon="✅")
+    del st.session_state["toast_msg"]
+
+# Custom CSS styling
 st.markdown("""
     <style>
         /* Top padding to clear Streamlit header banner */
@@ -90,7 +95,7 @@ st.markdown("""
         .kpi-escalated { background-color: #ffebee; border: 1px solid #ffcdd2; color: #c62828; }
         .kpi-completed { background-color: #e8f5e9; border: 1px solid #c8e6c9; color: #2e7d32; }
         
-        /* Clean Status Badges (No Emojis) */
+        /* Clean Status Badges */
         .badge-completed {
             background-color: #28a745 !important;
             color: #ffffff !important;
@@ -132,7 +137,6 @@ st.markdown("""
             display: inline-block;
         }
         
-        /* ADVANCED DETAILS EDITOR RED HEADER BANNER */
         .adv-header-banner {
             background-color: #dc3545 !important;
             color: #ffffff !important;
@@ -143,37 +147,117 @@ st.markdown("""
             margin-top: 8px !important;
             margin-bottom: 0px !important;
         }
+
+        /* FAINT BACKGROUND BOX FOR LOG NOTES */
+        .last-note-box {
+            background-color: #f0f4f8 !important;
+            border: 1px solid #d9e2ec !important;
+            border-radius: 6px !important;
+            padding: 6px 10px !important;
+            font-size: 0.82rem !important;
+            line-height: 1.35 !important;
+            word-break: break-word !important;
+            color: #334e68 !important;
+        }
+
+        /* TOP CONTROL BAR POPOVERS (Yellow Accent) */
+        div.top-control-bar div[data-testid="stPopover"] button {
+            background-color: #ffc107 !important;
+            color: #212529 !important;
+            border: 1px solid #e0a800 !important;
+            font-weight: 600 !important;
+            border-radius: 8px !important;
+            padding: 6px 16px !important;
+            white-space: nowrap !important;
+            min-width: max-content !important;
+            font-size: 0.92rem !important;
+        }
+        div.top-control-bar div[data-testid="stPopover"] button:hover {
+            background-color: #e0a800 !important;
+            color: #000000 !important;
+            box-shadow: 0px 2px 6px rgba(0,0,0,0.15) !important;
+        }
+        div.top-control-bar div[data-testid="stPopover"] button svg {
+            display: inline-block !important;
+            margin-left: 6px !important;
+        }
+
+        /* FLEX CONTAINERS FOR FLUSH TOP ALIGNMENT */
+        div.save-btn-container, div.delete-btn-container {
+            display: flex !important;
+            align-items: flex-start !important;
+            margin-top: 0px !important;
+            padding-top: 0px !important;
+        }
+        div.save-btn-container div[data-testid="stElementContainer"],
+        div.delete-btn-container div[data-testid="stElementContainer"] {
+            margin-top: 0px !important;
+            padding-top: 0px !important;
+        }
         
-        /* DISTINCT ACTION BUTTON STYLING (Green Save Icon, Red Delete Popover) */
-        div.save-btn-container button {
+        /* HARD-OVERRIDE SOLID GREEN SAVE BUTTONS */
+        div.save-btn-container button,
+        div.save-btn-container button[data-testid="stBaseButton-secondary"],
+        div.save-btn-container button[data-testid="stBaseButton-primary"] {
             background-color: #28a745 !important;
-            color: white !important;
+            background: #28a745 !important;
+            color: #ffffff !important;
             border: none !important;
             font-weight: bold !important;
-            border-radius: 6px !important;
-            padding: 6px 0px !important;
+            border-radius: 8px !important;
+            height: 40px !important;
+            min-width: 48px !important;
             width: 100% !important;
-            min-width: 36px !important;
-            font-size: 1.1rem !important;
+            font-size: 1.2rem !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            margin-top: 0px !important;
+        }
+        div.save-btn-container button *,
+        div.save-btn-container button p,
+        div.save-btn-container button span {
+            color: #ffffff !important;
         }
         div.save-btn-container button:hover {
             background-color: #218838 !important;
-            box-shadow: 0px 2px 4px rgba(0,0,0,0.2) !important;
+            background: #218838 !important;
+            box-shadow: 0px 2px 6px rgba(40,167,69,0.3) !important;
         }
-        div.delete-btn-container div[data-testid="stPopover"] button {
+
+        /* HARD-OVERRIDE SOLID RED DELETE BUTTONS */
+        div.delete-btn-container button,
+        div.delete-btn-container button[data-testid="stBaseButton-secondary"],
+        div.delete-btn-container button[data-testid="stBaseButton-primary"],
+        div.delete-btn-container button[data-testid="stPopoverButton"] {
             background-color: #dc3545 !important;
-            color: white !important;
+            background: #dc3545 !important;
+            color: #ffffff !important;
             border: none !important;
             font-weight: bold !important;
-            border-radius: 6px !important;
-            padding: 6px 0px !important;
+            border-radius: 8px !important;
+            height: 40px !important;
+            min-width: 48px !important;
             width: 100% !important;
-            min-width: 36px !important;
-            font-size: 1.1rem !important;
+            font-size: 1.2rem !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            padding: 0px !important;
+            margin-top: 0px !important;
         }
-        div.delete-btn-container div[data-testid="stPopover"] button:hover {
+        div.delete-btn-container button *,
+        div.delete-btn-container button p,
+        div.delete-btn-container button span {
+            color: #ffffff !important;
+        }
+        div.delete-btn-container button:hover {
             background-color: #c82333 !important;
-            box-shadow: 0px 2px 4px rgba(0,0,0,0.2) !important;
+            background: #c82333 !important;
+            box-shadow: 0px 2px 6px rgba(220,53,69,0.3) !important;
+        }
+        div.delete-btn-container button svg {
+            display: none !important;
         }
     </style>
 """, unsafe_allow_html=True)
@@ -182,7 +266,6 @@ st.markdown("""
 create_tables()
 update_schema()
 
-# Helper function to parse user typed numbers (e.g. "100,000" or "100000") safely into integers
 def parse_number(val):
     if val is None:
         return 0
@@ -191,14 +274,12 @@ def parse_number(val):
     clean_str = re.sub(r'[^\d-]', '', str(val))
     return int(clean_str) if clean_str else 0
 
-# Helper function to convert a DataFrame into a downloadable Excel binary buffer
 def convert_df_to_excel(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Inventory Export')
     return output.getvalue()
 
-# Helper function to render clean color status badges
 def render_status_badge(status_str):
     if status_str == "Completed":
         return '<span class="badge-completed">Completed</span>'
@@ -216,6 +297,7 @@ def render_status_badge(status_str):
 # ====================================================
 categories_list = get_all_categories()
 
+st.markdown('<div class="top-control-bar">', unsafe_allow_html=True)
 c_bar1, c_bar2, c_bar3 = st.columns([3.5, 1.0, 1.0])
 
 active_category = c_bar1.radio(
@@ -261,6 +343,7 @@ with c_bar3.popover("⚙️ Custom Columns"):
             add_category_custom_column(active_category, new_col_input)
             st.session_state["input_new_column"] = ""
             st.rerun()
+st.markdown('</div>', unsafe_allow_html=True)
 
 st.title(f"📂 {active_category} Management")
 
@@ -311,179 +394,8 @@ def get_board_column_weights(custom_cols_count):
     weights = [0.4, 2.2, 1.1, 1.1, 1.1, 1.1]
     for _ in range(custom_cols_count):
         weights.append(1.0)
-    weights.extend([1.4, 1.2, 1.8, 1.8, 0.6, 0.6])
+    weights.extend([1.4, 1.2, 1.8, 1.8, 0.9, 0.9])
     return weights
-
-# ====================================================
-# ISOLATED ROW FRAGMENT (LIGHTNING FAST INSTANT TOGGLE)
-# ====================================================
-@st.fragment
-def render_item_row(row, custom_cols, status_options, grid_weights, active_category):
-    medicine = row["medicine_name"]
-    group_label = row["base_drug_name"]
-    
-    # PRE-INSTANTIATION RESET CHECK: Unchecks checkbox & clears cached state BEFORE widgets render
-    if st.session_state.get(f"reset_row_{medicine}"):
-        st.session_state[f"chk_{medicine}"] = False
-        for k in [f"soh_{medicine}", f"transit_{medicine}", f"amc_{medicine}", f"request_{medicine}", 
-                  f"status_{medicine}", f"owner_{medicine}", f"comment_{medicine}",
-                  f"adv_group_{medicine}", f"adv_name_{medicine}", f"adv_status_{medicine}", 
-                  f"adv_owner_{medicine}", f"adv_soh_{medicine}", f"adv_transit_{medicine}", 
-                  f"adv_amc_{medicine}", f"adv_req_{medicine}", f"adv_note_{medicine}"]:
-            if k in st.session_state:
-                del st.session_state[k]
-        for c_name in custom_cols:
-            for ck in [f"custom_{c_name}_{medicine}", f"adv_custom_{c_name}_{medicine}"]:
-                if ck in st.session_state:
-                    del st.session_state[ck]
-        del st.session_state[f"reset_row_{medicine}"]
-
-    chk_w = grid_weights[0]
-    form_weights = grid_weights[1:-1]
-    del_w = grid_weights[-1]
-    
-    col_chk, col_form, col_del = st.columns([chk_w, sum(form_weights), del_w])
-    
-    # 1. Checkbox outside form for instant local interaction
-    with col_chk:
-        is_selected = st.checkbox("", key=f"chk_{medicine}", label_visibility="collapsed")
-
-    # 2. Row Form contains all inline inputs and green save button
-    with col_form:
-        with st.form(key=f"row_form_{medicine}", border=False):
-            f_elements = st.columns(form_weights)
-            
-            f_elements[0].write(f"**{group_label}**\n\n{medicine}")
-            
-            soh_raw = f_elements[1].text_input("SOH", value=f"{int(row['stock_on_hand']):,}", key=f"soh_{medicine}", label_visibility="collapsed")
-            transit_raw = f_elements[2].text_input("Inbound", value=f"{int(row['in_transit']):,}", key=f"transit_{medicine}", label_visibility="collapsed")
-            amc_raw = f_elements[3].text_input("AMC", value=f"{int(row['amc']):,}", key=f"amc_{medicine}", label_visibility="collapsed")
-            request_qty_raw = f_elements[4].text_input("Request", value=f"{int(row['request_qty']):,}", key=f"request_{medicine}", label_visibility="collapsed")
-            
-            soh = parse_number(soh_raw)
-            transit = parse_number(transit_raw)
-            amc = parse_number(amc_raw)
-            request_qty = parse_number(request_qty_raw)
-            
-            existing_custom_dict = json.loads(row["custom_fields"]) if row["custom_fields"] else {}
-            updated_custom_dict = {}
-            
-            col_idx = 5
-            for c_name in custom_cols:
-                val = existing_custom_dict.get(c_name, "")
-                updated_custom_dict[c_name] = f_elements[col_idx].text_input(c_name, value=str(val), key=f"custom_{c_name}_{medicine}", label_visibility="collapsed")
-                col_idx += 1
-                
-            def_idx = status_options.index(row["status"]) if row["status"] in status_options else 0
-            selected_status = f_elements[col_idx].selectbox("Status", status_options, index=def_idx, key=f"status_{medicine}", label_visibility="collapsed")
-            current_owner = f_elements[col_idx+1].text_input("Owner", value=row["owner"], key=f"owner_{medicine}", label_visibility="collapsed")
-            
-            f_elements[col_idx+2].caption(f"⏱ *({row['last_updated']})*:\n{row['last_comment']}")
-            new_comment = f_elements[col_idx+3].text_input("New Comment", key=f"comment_{medicine}", label_visibility="collapsed", placeholder="Type update...")
-            
-            # Green Save Form Submit Button
-            f_elements[col_idx+4].markdown('<div class="save-btn-container">', unsafe_allow_html=True)
-            save_submitted = f_elements[col_idx+4].form_submit_button("💾", help=f"Save changes for {medicine}")
-            f_elements[col_idx+4].markdown('</div>', unsafe_allow_html=True)
-            
-            if save_submitted:
-                update_stock_levels(medicine, soh, transit, amc, request_qty, custom_fields_dict=updated_custom_dict)
-                
-                comment_to_save = new_comment.strip()
-                if not comment_to_save:
-                    changes = []
-                    if selected_status != row["status"]: changes.append(f"Status: {row['status']} ➔ {selected_status}")
-                    if current_owner != row["owner"]: changes.append(f"Owner: {row['owner'] or 'None'} ➔ {current_owner}")
-                    if soh != int(row["stock_on_hand"]): changes.append(f"SOH: {int(row['stock_on_hand']):,} ➔ {soh:,}")
-                    if transit != int(row["in_transit"]): changes.append(f"Inbound: {int(row['in_transit']):,} ➔ {transit:,}")
-                    comment_to_save = ", ".join(changes) if changes else "Updated parameters."
-                
-                save_update(medicine, datetime.now().strftime("%Y-%m-%d %H:%M"), selected_status, current_owner, comment_to_save)
-                st.session_state[f"reset_row_{medicine}"] = True
-                st.success(f"Saved & updated details for '{medicine}'!")
-                st.rerun()
-
-    # 3. Red Delete Popover Button
-    with col_del:
-        col_del.markdown('<div class="delete-btn-container">', unsafe_allow_html=True)
-        with col_del.popover("🗑️", help=f"Delete {medicine}"):
-            st.markdown(f"### Delete Item")
-            st.warning(f"Are you sure you want to delete **'{medicine}'**?")
-            deleter_name = st.text_input("Your Name (Required for audit log)", key=f"deleter_name_{medicine}").strip()
-            
-            if st.button("Confirm Delete", key=f"confirm_del_{medicine}", type="primary"):
-                if not deleter_name:
-                    st.error("Please enter your name to confirm deletion.")
-                else:
-                    delete_date_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    delete_medicine(medicine, deleter_name, delete_date_time)
-                    st.success(f"Item '{medicine}' deleted by {deleter_name}.")
-                    st.rerun()
-        col_del.markdown('</div>', unsafe_allow_html=True)
-
-    # ADVANCED DETAILS EDITOR FORM (Renders instantly inside fragment)
-    if is_selected:
-        st.markdown(f'<div class="adv-header-banner">✏️ Advanced Details Editor — {medicine}</div>', unsafe_allow_html=True)
-        with st.form(key=f"adv_form_{medicine}"):
-            st.markdown("#### Edit Standard Details")
-            
-            adv_c1, adv_c2, adv_c3, adv_c4 = st.columns(4)
-            adv_group = adv_c1.text_input("Group / Class Name", value=group_label, key=f"adv_group_{medicine}")
-            adv_name = adv_c2.text_input("Item Specification / Full Description", value=medicine, key=f"adv_name_{medicine}")
-            adv_status = adv_c3.selectbox("Current Status", status_options, index=def_idx, key=f"adv_status_{medicine}")
-            adv_owner = adv_c4.text_input("Responsible Officer / Owner", value=row["owner"], key=f"adv_owner_{medicine}")
-            
-            st.markdown("##### Stock & Quantities")
-            q_c1, q_c2, q_c3, q_c4 = st.columns(4)
-            adv_soh_raw = q_c1.text_input("Stock On Hand (SOH)", value=f"{int(row['stock_on_hand']):,}", key=f"adv_soh_{medicine}")
-            adv_transit_raw = q_c2.text_input("Inbound / In Transit", value=f"{int(row['in_transit']):,}", key=f"adv_transit_{medicine}")
-            adv_amc_raw = q_c3.text_input("Average Monthly Consumption (AMC)", value=f"{int(row['amc']):,}", key=f"adv_amc_{medicine}")
-            adv_req_raw = q_c4.text_input("Request Quantity", value=f"{int(row['request_qty']):,}", key=f"adv_req_{medicine}")
-            
-            adv_soh = parse_number(adv_soh_raw)
-            adv_transit = parse_number(adv_transit_raw)
-            adv_amc = parse_number(adv_amc_raw)
-            adv_req = parse_number(adv_req_raw)
-            
-            adv_custom_dict = {}
-            if custom_cols:
-                st.markdown("##### Dynamic Custom Attributes")
-                cust_cols_elements = st.columns(min(len(custom_cols), 4))
-                for idx_c, c_name in enumerate(custom_cols):
-                    val_c = existing_custom_dict.get(c_name, "")
-                    target_col = cust_cols_elements[idx_c % 4]
-                    adv_custom_dict[c_name] = target_col.text_input(c_name, value=str(val_c), key=f"adv_custom_{c_name}_{medicine}")
-            else:
-                adv_custom_dict = updated_custom_dict
-
-            adv_note = st.text_area("Update Log Note", placeholder="Type detailed update note...", key="adv_note_" + medicine)
-            
-            adv_submitted = st.form_submit_button("💾 Save All Details", type="primary", help="Save all details")
-            
-            if adv_submitted:
-                update_stock_levels(medicine, adv_soh, adv_transit, adv_amc, adv_req, custom_fields_dict=adv_custom_dict)
-                comment_to_save = adv_note.strip() if adv_note.strip() else "Updated via Advanced Details Editor."
-                save_update(medicine, datetime.now().strftime("%Y-%m-%d %H:%M"), adv_status, adv_owner, comment_to_save)
-                
-                # Flag row reset on rerun to uncheck box (collapse window) & sync inline row textboxes
-                st.session_state[f"reset_row_{medicine}"] = True
-                st.success(f"Saved & updated inline view for '{medicine}'!")
-                st.rerun()
-
-    # LAZY-LOAD HISTORY EXPANDER: Only queries SQLite when timeline is opened
-    with st.expander("📜 View Full Past Change Log Timeline", expanded=False):
-        if is_selected:
-            history_df = get_medicine_history(medicine)
-            if len(history_df) <= 1:
-                st.caption("No older historical timeline records found.")
-            else:
-                for _, log in history_df.iloc[1:].iterrows():
-                    st.markdown(f"🗓️ **{log['update_date']}** | Status: `{log['status']}` | Owner: `{log['owner'] or '-'}`")
-                    st.markdown(f"> *{log['comment']}*")
-        else:
-            st.caption("Select checkbox to view complete change history.")
-
-    st.markdown("<hr style='margin:5px 0px; border-top: 1px dashed #444;' />", unsafe_allow_html=True)
 
 # ====================================================
 # TAB 1: ACTION DASHBOARD
@@ -646,6 +558,253 @@ with tabs[0]:
             st.markdown("<hr style='margin:2px 0px; border-top: 1px dashed #444;' />", unsafe_allow_html=True)
 
 # ====================================================
+# TAB 2 ISOLATED FRAGMENT FOR LIGHTNING-FAST GRID INTERACTION
+# ====================================================
+@st.fragment
+def render_review_board_grid(records, custom_cols, active_category):
+    status_options = ["Open", "In Progress", "Waiting Supplier", "Escalated", "Completed"]
+    grid_weights = get_board_column_weights(len(custom_cols))
+    
+    # Header row
+    h_elements = st.columns(grid_weights)
+    h_elements[0].markdown('<span class="grid-header-text">Select</span>', unsafe_allow_html=True)
+    h_elements[1].markdown('<span class="grid-header-text">Item Description</span>', unsafe_allow_html=True)
+    h_elements[2].markdown('<span class="grid-header-text">SOH</span>', unsafe_allow_html=True)
+    h_elements[3].markdown('<span class="grid-header-text">Inbound</span>', unsafe_allow_html=True)
+    h_elements[4].markdown('<span class="grid-header-text">AMC</span>', unsafe_allow_html=True)
+    h_elements[5].markdown('<span class="grid-header-text">Request</span>', unsafe_allow_html=True)
+    
+    col_idx = 6
+    for c_name in custom_cols:
+        h_elements[col_idx].markdown(f'<span class="grid-header-text">{c_name}</span>', unsafe_allow_html=True)
+        col_idx += 1
+        
+    h_elements[col_idx].markdown('<span class="grid-header-text">Status</span>', unsafe_allow_html=True)
+    h_elements[col_idx+1].markdown('<span class="grid-header-text">Owner</span>', unsafe_allow_html=True)
+    h_elements[col_idx+2].markdown('<span class="grid-header-text">Last Note</span>', unsafe_allow_html=True)
+    h_elements[col_idx+3].markdown('<span class="grid-header-text">New Update</span>', unsafe_allow_html=True)
+    h_elements[col_idx+4].markdown('<span class="grid-header-text">Save</span>', unsafe_allow_html=True)
+    h_elements[col_idx+5].markdown('<span class="grid-header-text">Delete</span>', unsafe_allow_html=True)
+    
+    st.markdown("<hr style='margin:0px 0px 10px 0px; border-top: 2px solid #555;' />", unsafe_allow_html=True)
+
+    # Inline Quick Add Row
+    add_elements = st.columns(grid_weights)
+    add_elements[0].markdown("➕")
+    new_group = add_elements[1].text_input("Add Group", key="add_group", placeholder="GROUP / CLASS...", label_visibility="collapsed")
+    new_med = add_elements[1].text_input("Add Item Name", key="add_med", placeholder="Item Description / Spec...", label_visibility="collapsed")
+    
+    new_soh_raw = add_elements[2].text_input("Add SOH", value="0", key="add_soh", label_visibility="collapsed")
+    new_transit_raw = add_elements[3].text_input("Add Transit", value="0", key="add_transit", label_visibility="collapsed")
+    new_amc_raw = add_elements[4].text_input("Add AMC", value="0", key="add_amc", label_visibility="collapsed")
+    new_req_raw = add_elements[5].text_input("Add Request", value="0", key="add_req", label_visibility="collapsed")
+    
+    new_custom_inputs = {}
+    col_idx = 6
+    for c_name in custom_cols:
+        new_custom_inputs[c_name] = add_elements[col_idx].text_input(f"Add {c_name}", key=f"add_custom_{c_name}", placeholder=f"{c_name}...", label_visibility="collapsed")
+        col_idx += 1
+        
+    new_status = add_elements[col_idx].selectbox("Add Status", status_options, index=0, key="add_status", label_visibility="collapsed")
+    new_owner = add_elements[col_idx+1].text_input("Add Owner", placeholder="Owner...", key="add_owner", label_visibility="collapsed")
+    
+    add_elements[col_idx+2].markdown(f"<span style='color: #ff4b4b; font-weight: bold;'>New Entry</span>", unsafe_allow_html=True)
+    new_comment = add_elements[col_idx+3].text_input("Add Comment", placeholder="Initial update note...", key="add_comment", label_visibility="collapsed")
+    
+    if add_elements[col_idx+4].button("➕", key="btn_add_new_row", help=f"Insert entry into {active_category}"):
+        if not new_group.strip() or not new_med.strip():
+            st.error("Both Group Name and Item Description are required!")
+        else:
+            success = add_new_medicine(
+                new_group.strip().upper(), new_med.strip(), 
+                parse_number(new_soh_raw), parse_number(new_transit_raw), 
+                parse_number(new_amc_raw), parse_number(new_req_raw), 
+                category=active_category, custom_fields_dict=new_custom_inputs
+            )
+            if success:
+                comment_to_save = new_comment.strip() if new_comment.strip() else "Item manually added."
+                save_update(new_med.strip(), datetime.now().strftime("%Y-%m-%d %H:%M"), new_status, new_owner.strip(), comment_to_save)
+                
+                st.session_state["toast_msg"] = "All Data is saved"
+                st.rerun()
+            else:
+                st.error(f"Error: '{new_med.strip()}' already exists in your database.")
+
+    st.markdown("<hr style='margin:10px 0px 15px 0px; border-top: 3px double #888;' />", unsafe_allow_html=True)
+
+    chk_w = grid_weights[0]
+    form_weights = grid_weights[1:-1]
+    del_w = grid_weights[-1]
+
+    # Render items
+    for idx, row in records.iterrows():
+        medicine = row["medicine_name"]
+        group_label = row["base_drug_name"]
+
+        # SAFE PRE-INSTANTIATION STATE RESETS BEFORE WIDGETS ARE RENDERED
+        if st.session_state.get(f"reset_chk_{medicine}"):
+            st.session_state[f"chk_{medicine}"] = False
+            del st.session_state[f"reset_chk_{medicine}"]
+
+        if st.session_state.get(f"reset_comment_{medicine}"):
+            st.session_state[f"comment_{medicine}"] = ""
+            del st.session_state[f"reset_comment_{medicine}"]
+
+        if st.session_state.get(f"reset_adv_note_{medicine}"):
+            st.session_state[f"adv_note_{medicine}"] = ""
+            del st.session_state[f"reset_adv_note_{medicine}"]
+
+        col_chk, col_form, col_del = st.columns([chk_w, sum(form_weights), del_w])
+        
+        # 1. Instant Checkbox
+        with col_chk:
+            is_selected = st.checkbox("", key=f"chk_{medicine}", label_visibility="collapsed")
+
+        # 2. Main Row Form
+        with col_form:
+            with st.form(key=f"row_form_{medicine}", border=False):
+                f_elements = st.columns(form_weights)
+                
+                f_elements[0].write(f"**{group_label}**\n\n{medicine}")
+                
+                soh_raw = f_elements[1].text_input("SOH", value=f"{int(row['stock_on_hand']):,}", key=f"soh_{medicine}", label_visibility="collapsed")
+                transit_raw = f_elements[2].text_input("Inbound", value=f"{int(row['in_transit']):,}", key=f"transit_{medicine}", label_visibility="collapsed")
+                amc_raw = f_elements[3].text_input("AMC", value=f"{int(row['amc']):,}", key=f"amc_{medicine}", label_visibility="collapsed")
+                request_qty_raw = f_elements[4].text_input("Request", value=f"{int(row['request_qty']):,}", key=f"request_{medicine}", label_visibility="collapsed")
+                
+                existing_custom_dict = json.loads(row["custom_fields"]) if row["custom_fields"] else {}
+                updated_custom_dict = {}
+                
+                col_idx = 5
+                for c_name in custom_cols:
+                    val = existing_custom_dict.get(c_name, "")
+                    updated_custom_dict[c_name] = f_elements[col_idx].text_input(c_name, value=str(val), key=f"custom_{c_name}_{medicine}", label_visibility="collapsed")
+                    col_idx += 1
+                    
+                def_idx = status_options.index(row["status"]) if row["status"] in status_options else 0
+                selected_status = f_elements[col_idx].selectbox("Status", status_options, index=def_idx, key=f"status_{medicine}", label_visibility="collapsed")
+                current_owner = f_elements[col_idx+1].text_input("Owner", value=row["owner"], key=f"owner_{medicine}", label_visibility="collapsed")
+                
+                # STYLED LAST NOTE BOX (Faint background color for visual prominence)
+                last_note_html = f"""
+                <div class="last-note-box">
+                    <span style="font-size: 0.72rem; color: #555; font-weight: bold;">⏱ ({row['last_updated']})</span><br/>
+                    <span style="font-size: 0.82rem; color: #111;">{row['last_comment'] or 'No notes'}</span>
+                </div>
+                """
+                f_elements[col_idx+2].markdown(last_note_html, unsafe_allow_html=True)
+                
+                new_comment = f_elements[col_idx+3].text_input("New Comment", key=f"comment_{medicine}", label_visibility="collapsed", placeholder="Type update...")
+                
+                # Solid Green Save Button Container (Aligned top)
+                f_elements[col_idx+4].markdown('<div class="save-btn-container">', unsafe_allow_html=True)
+                save_submitted = f_elements[col_idx+4].form_submit_button("💾", help=f"Save changes for {medicine}")
+                f_elements[col_idx+4].markdown('</div>', unsafe_allow_html=True)
+                
+                if save_submitted:
+                    comment_to_save = new_comment.strip()
+                    # STRICT GUARD: Block saving if comment box is empty
+                    if not comment_to_save:
+                        st.error("⚠️ Please enter an update comment before saving!")
+                    else:
+                        soh = parse_number(soh_raw)
+                        transit = parse_number(transit_raw)
+                        amc = parse_number(amc_raw)
+                        request_qty = parse_number(request_qty_raw)
+
+                        update_stock_levels(medicine, soh, transit, amc, request_qty, custom_fields_dict=updated_custom_dict)
+                        save_update(medicine, datetime.now().strftime("%Y-%m-%d %H:%M"), selected_status, current_owner, comment_to_save)
+                        
+                        # QUEUE TEXTBOX CLEAR BEFORE RERUN
+                        st.session_state[f"reset_comment_{medicine}"] = True
+                        st.session_state["toast_msg"] = "All Data is saved"
+                        st.rerun()
+
+        # 3. Solid Red Delete Popover Container (Aligned top)
+        with col_del:
+            col_del.markdown('<div class="delete-btn-container">', unsafe_allow_html=True)
+            with col_del.popover("🗑️", help=f"Delete {medicine}"):
+                st.markdown(f"### Delete Item")
+                st.warning(f"Are you sure you want to delete **'{medicine}'**?")
+                deleter_name = st.text_input("Your Name (Required for audit log)", key=f"deleter_name_{medicine}").strip()
+                
+                if st.button("Confirm Delete", key=f"confirm_del_{medicine}", type="primary"):
+                    if not deleter_name:
+                        st.error("Please enter your name to confirm deletion.")
+                    else:
+                        delete_date_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        delete_medicine(medicine, deleter_name, delete_date_time)
+                        st.session_state["toast_msg"] = f"Item '{medicine}' deleted"
+                        st.rerun()
+            col_del.markdown('</div>', unsafe_allow_html=True)
+
+        # Instant Advanced Editor Window
+        if is_selected:
+            st.markdown(f'<div class="adv-header-banner">✏️ Advanced Details Editor — {medicine}</div>', unsafe_allow_html=True)
+            with st.form(key=f"adv_form_{medicine}"):
+                st.markdown("#### Edit Standard Details")
+                
+                adv_c1, adv_c2, adv_c3, adv_c4 = st.columns(4)
+                adv_group = adv_c1.text_input("Group / Class Name", value=group_label, key=f"adv_group_{medicine}")
+                adv_name = adv_c2.text_input("Item Specification / Full Description", value=medicine, key=f"adv_name_{medicine}")
+                adv_status = adv_c3.selectbox("Current Status", status_options, index=def_idx, key=f"adv_status_{medicine}")
+                adv_owner = adv_c4.text_input("Responsible Officer / Owner", value=row["owner"], key=f"adv_owner_{medicine}")
+                
+                st.markdown("##### Stock & Quantities")
+                q_c1, q_c2, q_c3, q_c4 = st.columns(4)
+                adv_soh_raw = q_c1.text_input("Stock On Hand (SOH)", value=f"{int(row['stock_on_hand']):,}", key=f"adv_soh_{medicine}")
+                adv_transit_raw = q_c2.text_input("Inbound / In Transit", value=f"{int(row['in_transit']):,}", key=f"adv_transit_{medicine}")
+                adv_amc_raw = q_c3.text_input("Average Monthly Consumption (AMC)", value=f"{int(row['amc']):,}", key=f"adv_amc_{medicine}")
+                adv_req_raw = q_c4.text_input("Request Quantity", value=f"{int(row['request_qty']):,}", key=f"adv_req_{medicine}")
+                
+                adv_custom_dict = {}
+                if custom_cols:
+                    st.markdown("##### Dynamic Custom Attributes")
+                    cust_cols_elements = st.columns(min(len(custom_cols), 4))
+                    for idx_c, c_name in enumerate(custom_cols):
+                        val_c = existing_custom_dict.get(c_name, "")
+                        target_col = cust_cols_elements[idx_c % 4]
+                        adv_custom_dict[c_name] = target_col.text_input(c_name, value=str(val_c), key=f"adv_custom_{c_name}_{medicine}")
+                else:
+                    adv_custom_dict = updated_custom_dict
+
+                adv_note = st.text_area("Update Log Note", placeholder="Type detailed update note...", key="adv_note_" + medicine)
+                
+                adv_submitted = st.form_submit_button("💾 Save All Details", type="primary", help="Save all details")
+                
+                if adv_submitted:
+                    adv_soh = parse_number(adv_soh_raw)
+                    adv_transit = parse_number(adv_transit_raw)
+                    adv_amc = parse_number(adv_amc_raw)
+                    adv_req = parse_number(adv_req_raw)
+
+                    update_stock_levels(medicine, adv_soh, adv_transit, adv_amc, adv_req, custom_fields_dict=adv_custom_dict)
+                    comment_to_save = adv_note.strip() if adv_note.strip() else "Updated via Advanced Details Editor."
+                    save_update(medicine, datetime.now().strftime("%Y-%m-%d %H:%M"), adv_status, adv_owner, comment_to_save)
+                    
+                    # QUEUE RESETS BEFORE RERUN
+                    st.session_state[f"reset_comment_{medicine}"] = True
+                    st.session_state[f"reset_adv_note_{medicine}"] = True
+                    st.session_state[f"reset_chk_{medicine}"] = True
+                    st.session_state["toast_msg"] = "All Data is saved"
+                    st.rerun()
+
+        # History timeline expander
+        with st.expander("📜 View Full Past Change Log Timeline", expanded=False):
+            if is_selected:
+                history_df = get_medicine_history(medicine)
+                if len(history_df) <= 1:
+                    st.caption("No older historical timeline records found.")
+                else:
+                    for _, log in history_df.iloc[1:].iterrows():
+                        st.markdown(f"🗓️ **{log['update_date']}** | Status: `{log['status']}` | Owner: `{log['owner'] or '-'}`")
+                        st.markdown(f"> *{log['comment']}*")
+            else:
+                st.caption("Select checkbox to view complete change history.")
+        
+        st.markdown("<hr style='margin:5px 0px; border-top: 1px dashed #444;' />", unsafe_allow_html=True)
+
+# ====================================================
 # TAB 2: LIVE REVIEW & ITEM-BY-ITEM CREATION / DELETE
 # ====================================================
 with tabs[1]:
@@ -675,98 +834,13 @@ with tabs[1]:
     
     st.caption(f"Add a new item row directly below under **{active_category}**, or modify/delete existing items.")
     
-    grid_weights = get_board_column_weights(len(custom_cols))
-    h_elements = st.columns(grid_weights)
-    
-    h_elements[0].markdown('<span class="grid-header-text">Select</span>', unsafe_allow_html=True)
-    h_elements[1].markdown('<span class="grid-header-text">Item Description</span>', unsafe_allow_html=True)
-    h_elements[2].markdown('<span class="grid-header-text">SOH</span>', unsafe_allow_html=True)
-    h_elements[3].markdown('<span class="grid-header-text">Inbound</span>', unsafe_allow_html=True)
-    h_elements[4].markdown('<span class="grid-header-text">AMC</span>', unsafe_allow_html=True)
-    h_elements[5].markdown('<span class="grid-header-text">Request</span>', unsafe_allow_html=True)
-    
-    col_idx = 6
-    for c_name in custom_cols:
-        h_elements[col_idx].markdown(f'<span class="grid-header-text">{c_name}</span>', unsafe_allow_html=True)
-        col_idx += 1
-        
-    h_elements[col_idx].markdown('<span class="grid-header-text">Status</span>', unsafe_allow_html=True)
-    h_elements[col_idx+1].markdown('<span class="grid-header-text">Owner</span>', unsafe_allow_html=True)
-    h_elements[col_idx+2].markdown('<span class="grid-header-text">Last Note</span>', unsafe_allow_html=True)
-    h_elements[col_idx+3].markdown('<span class="grid-header-text">New Update</span>', unsafe_allow_html=True)
-    h_elements[col_idx+4].markdown('<span class="grid-header-text">Save</span>', unsafe_allow_html=True)
-    h_elements[col_idx+5].markdown('<span class="grid-header-text">Delete</span>', unsafe_allow_html=True)
-    
-    st.markdown("<hr style='margin:0px 0px 10px 0px; border-top: 2px solid #555;' />", unsafe_allow_html=True)
-    
-    # INLINE QUICK ADD ROW
-    add_elements = st.columns(grid_weights)
-    
-    add_elements[0].markdown("➕")
-    new_group = add_elements[1].text_input("Add Group", key="add_group", placeholder="GROUP / CLASS...", label_visibility="collapsed")
-    new_med = add_elements[1].text_input("Add Item Name", key="add_med", placeholder="Item Description / Spec...", label_visibility="collapsed")
-    
-    new_soh_raw = add_elements[2].text_input("Add SOH", value="0", key="add_soh", label_visibility="collapsed")
-    new_transit_raw = add_elements[3].text_input("Add Transit", value="0", key="add_transit", label_visibility="collapsed")
-    new_amc_raw = add_elements[4].text_input("Add AMC", value="0", key="add_amc", label_visibility="collapsed")
-    new_req_raw = add_elements[5].text_input("Add Request", value="0", key="add_req", label_visibility="collapsed")
-    
-    new_soh = parse_number(new_soh_raw)
-    new_transit = parse_number(new_transit_raw)
-    new_amc = parse_number(new_amc_raw)
-    new_req = parse_number(new_req_raw)
-    
-    new_custom_inputs = {}
-    col_idx = 6
-    for c_name in custom_cols:
-        new_custom_inputs[c_name] = add_elements[col_idx].text_input(f"Add {c_name}", key=f"add_custom_{c_name}", placeholder=f"{c_name}...", label_visibility="collapsed")
-        col_idx += 1
-        
-    status_options = ["Open", "In Progress", "Waiting Supplier", "Escalated", "Completed"]
-    new_status = add_elements[col_idx].selectbox("Add Status", status_options, index=0, key="add_status", label_visibility="collapsed")
-    new_owner = add_elements[col_idx+1].text_input("Add Owner", placeholder="Owner...", key="add_owner", label_visibility="collapsed")
-    
-    add_elements[col_idx+2].markdown(f"<span style='color: #ff4b4b; font-weight: bold;'>New Entry</span>", unsafe_allow_html=True)
-    new_comment = add_elements[col_idx+3].text_input("Add Comment", placeholder="Initial update note...", key="add_comment", label_visibility="collapsed")
-    
-    if add_elements[col_idx+4].button("➕", key="btn_add_new_row", help=f"Insert entry into {active_category}"):
-        if not new_group.strip() or not new_med.strip():
-            st.error("Both Group Name and Item Description are required!")
-        else:
-            success = add_new_medicine(new_group.strip().upper(), new_med.strip(), new_soh, new_transit, new_amc, new_req, category=active_category, custom_fields_dict=new_custom_inputs)
-            if success:
-                comment_to_save = new_comment.strip() if new_comment.strip() else "Item manually added."
-                save_update(new_med.strip(), datetime.now().strftime("%Y-%m-%d %H:%M"), new_status, new_owner.strip(), comment_to_save)
-                
-                st.session_state["add_group"] = ""
-                st.session_state["add_med"] = ""
-                st.session_state["add_soh"] = "0"
-                st.session_state["add_transit"] = "0"
-                st.session_state["add_amc"] = "0"
-                st.session_state["add_req"] = "0"
-                st.session_state["add_owner"] = ""
-                st.session_state["add_comment"] = ""
-                for c_name in custom_cols:
-                    if f"add_custom_{c_name}" in st.session_state:
-                        st.session_state[f"add_custom_{c_name}"] = ""
-                
-                st.success(f"Added {new_med.strip()} to {active_category}!")
-                st.rerun()
-            else:
-                st.error(f"Error: '{new_med.strip()}' already exists in your database.")
-
-    st.markdown("<hr style='margin:10px 0px 15px 0px; border-top: 3px double #888;' />", unsafe_allow_html=True)
-
-    # EXISTING RECORDS LOOP (Renders isolated row fragments for sub-second checkbox responsiveness)
     if len(records) == 0:
         if search_query:
             st.warning(f"No items match your search for **'{search_query}'** in {active_category}.")
         else:
             st.info(f"No items currently registered under '{active_category}'. Use the inline row above to add one.")
     else:
-        status_options = ["Open", "In Progress", "Waiting Supplier", "Escalated", "Completed"]
-        for idx, row in records.iterrows():
-            render_item_row(row, custom_cols, status_options, grid_weights, active_category)
+        render_review_board_grid(records, custom_cols, active_category)
 
 # ====================================================
 # TAB 3: MASTER IMPORT PORTAL
@@ -789,7 +863,7 @@ with tabs[2]:
             
             if st.button(f"🚀 Import Records into {active_category}", type="primary"):
                 save_medicines(df_prepared)
-                st.success(f"Successfully loaded records into '{active_category}'!")
+                st.session_state["toast_msg"] = f"Successfully loaded records into '{active_category}'!"
                 st.rerun()
             st.dataframe(df_prepared, use_container_width=True)
         except Exception as e:
