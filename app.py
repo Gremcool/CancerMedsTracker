@@ -346,22 +346,25 @@ with c_bar3.popover("⚙️ Custom Columns"):
             st.rerun()
 st.markdown('</div>', unsafe_allow_html=True)
 
-st.title(f"📂 {active_category} Management")
 
 # ====================================================
 # QUICK ITEM SEARCH BAR & GLOBAL EXPORT BUTTON
 # ====================================================
-s_col1, s_col2 = st.columns([4.0, 1.2])
+try:
+    s_col0, s_col1, s_col2 = st.columns([2.7, 3.4, 1.3], vertical_alignment="center")
+except TypeError:  # very old Streamlit without vertical_alignment
+    s_col0, s_col1, s_col2 = st.columns([2.7, 3.4, 1.3])
+
+with s_col0:
+    st.title(f"📂 {active_category} Management")
 
 with s_col1:
-    st.markdown('<div class="search-box-container">', unsafe_allow_html=True)
     search_query = st.text_input(
         "🔍 Search Item or Status",
-        placeholder="🔎 Search by Item Name, Group, Owner, or Status (e.g. Escalated, Completed, Open)...",
+        placeholder="🔎 Search item, group, owner or status (e.g. Escalated, Open)...",
         key="global_item_search",
         label_visibility="collapsed"
     ).strip().lower()
-    st.markdown('</div>', unsafe_allow_html=True)
 
 with s_col2:
     export_data_df = get_latest_statuses(active_category)
@@ -387,12 +390,31 @@ with s_col2:
 
 st.markdown("""
     <style>
+        /* ---- Compact top section (less empty space, nothing hidden) ---- */
+        header[data-testid="stHeader"] { height: 2.75rem !important; }
+        .block-container { padding-top: 3.1rem !important; padding-bottom: 1.5rem !important; }
+        .block-container > div[data-testid="stVerticalBlock"] { gap: 0.55rem !important; }
+        .block-container h1 {
+            font-size: 1.75rem !important;
+            line-height: 1.25 !important;
+            padding: 0 !important;
+            margin: 0 !important;
+        }
+        /* style-only helper blocks should not take up a blank row */
+        div[data-testid="stElementContainer"]:has(> div[data-testid="stMarkdownContainer"] > style),
+        .element-container:has(> div[data-testid="stMarkdownContainer"] > style) { display: none !important; }
+        div[data-baseweb="tab-panel"] { padding-top: 0.4rem !important; }
+        .kpi-card { padding: 9px 8px !important; margin-bottom: 2px !important; }
+        .kpi-title { margin-bottom: 2px !important; }
+        .kpi-value { font-size: 1.55rem !important; }
+        div[data-testid="stMarkdownContainer"] > hr:not([style]) { margin: 0.5rem 0 !important; }
+
         /* Expand / collapse (+ / -) buttons in the Master Meeting Tracking Log */
         [class*="st-key-sum_exp_closed_"] button,
         [class*="st-key-sum_exp_open_"] button {
-            width: 34px !important;
-            min-width: 34px !important;
-            height: 34px !important;
+            width: 30px !important;
+            min-width: 30px !important;
+            height: 30px !important;
             padding: 0 !important;
             border-radius: 8px !important;
             box-shadow: 0px 1px 3px rgba(0,0,0,0.25) !important;
@@ -553,12 +575,12 @@ with tabs[0]:
                 
                 c_idx = 7
                 for _ in custom_cols:
-                    r_elements[c_idx].markdown("-")
+                    r_elements[c_idx].markdown("–")
                     c_idx += 1
                     
                 r_elements[c_idx].markdown(f"`{status_text}`")
-                r_elements[c_idx+1].markdown("-")
-                r_elements[c_idx+2].markdown("-")
+                r_elements[c_idx+1].markdown("–")
+                r_elements[c_idx+2].markdown("–")
                 
                 if is_expanded:
                     for idx, row in group_df.iterrows():
@@ -578,7 +600,7 @@ with tabs[0]:
                             c_idx += 1
                             
                         sub_elements[c_idx].markdown(render_status_badge(row['Status']), unsafe_allow_html=True)
-                        sub_elements[c_idx+1].write(row['Owner'])
+                        sub_elements[c_idx+1].write(row['Owner'] if row['Owner'] not in ('-', '') else '–')
                         sub_elements[c_idx+2].caption(f"⏱️ ({row['Updated']}): {row['Note']}")
             else:
                 row = group_df.iloc[0]
@@ -597,7 +619,7 @@ with tabs[0]:
                     c_idx += 1
                     
                 r_elements[c_idx].markdown(render_status_badge(row['Status']), unsafe_allow_html=True)
-                r_elements[c_idx+1].write(row["Owner"])
+                r_elements[c_idx+1].write(row["Owner"] if row["Owner"] not in ("-", "") else "–")
                 r_elements[c_idx+2].caption(f"⏱️ ({row['Updated']}): {row['Note']}")
                 
             st.markdown("<hr style='margin:2px 0px; border-top: 1px dashed #444;' />", unsafe_allow_html=True)
