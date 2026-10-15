@@ -155,33 +155,129 @@ def delete_category_custom_column(category_name, column_name):
 
 # --- MEDICINE CRUD OPERATIONS ---
 
-def save_medicines(df):
-    """Inserts lines directly into database tracking arrays from Excel upload."""
+IMPORT_NUMERIC_FIELDS = ["stock_on_hand", "in_transit", "amc", "request_qty"]
+
+def _clean_num(val):
+    """Returns a float, or None when the value is blank / not numeric."""
+    try:
+        if val is None or pd.isna(val):
+            return None
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+def get_existing_item_map():
+    """READ-ONLY. Maps lower-cased item name -> (stored_name, category) for every record."""
     conn = get_connection()
     cur = conn.cursor()
+    cur.execute("SELECT medicine_name, COALESCE(category, 'Medicines') FROM medicines")
+    rows = cur.fetchall()
+    conn.close()
+    return {str(n).strip().lower(): (n, c) for n, c in rows if n}
+
+STATUS_NEW = "New"
+STATUS_UPDATE = "Update (already in this category)"
+STATUS_BLOCKED_PREFIX = "Skipped - already exists in "
+
+def classify_import_rows(df, category):
+    """READ-ONLY. Adds an 'import_status' column telling the user exactly what the import will do."""
+    if df is None or df.empty:
+        return df
+    existing = get_existing_item_map()
+    statuses = []
+    for name in df["medicine_name"]:
+        hit = existing.get(str(name).strip().lower())
+        if hit is None:
+            statuses.append(STATUS_NEW)
+        elif hit[1] == category:
+            statuses.append(STATUS_UPDATE)
+        else:
+            statuses.append(f"{STATUS_BLOCKED_PREFIX}'{hit[1]}'")
+    out = df.copy()
+    out.insert(0, "import_status", statuses)
+    return out
+
+def save_medicines(df, category=None, custom_cols=None):
+    """
+    Safely imports rows from an Excel / pasted / typed table.
+
+    Safety rules (this is what protects existing data):
+      * A record that already lives in ANOTHER category is never touched or re-labelled.
+      * A record already in the SAME category only has the columns that were actually
+        supplied updated (stock is never silently reset to 0).
+      * Brand-new names are inserted with the target category exactly as given.
+
+    Returns a summary dict: {"added", "updated", "skipped": [(name, existing_category)]}.
+    """
+    custom_cols = [c for c in (custom_cols or []) if c in df.columns]
+    summary = {"added": 0, "updated": 0, "skipped": []}
+    if df is None or df.empty:
+        return summary
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    target_default = category or "Medicines"
+    if target_default:
+        cur.execute("INSERT OR IGNORE INTO categories (name) VALUES (?)", (target_default,))
+
+    cur.execute("SELECT medicine_name, COALESCE(category, 'Medicines'), COALESCE(custom_fields, '{}') FROM medicines")
+    existing = {str(n).strip().lower(): (n, c, cf) for n, c, cf in cur.fetchall() if n}
+
     for _, row in df.iterrows():
-        cat = row.get("category", "Medicines")
-        cur.execute("""
-            INSERT INTO medicines (base_drug_name, medicine_name, stock_on_hand, in_transit, amc, request_qty, category, custom_fields)
-            VALUES (?, ?, ?, ?, ?, ?, ?, '{}')
-            ON CONFLICT(medicine_name) DO UPDATE SET
-                base_drug_name=excluded.base_drug_name,
-                stock_on_hand=excluded.stock_on_hand,
-                in_transit=excluded.in_transit,
-                amc=excluded.amc,
-                request_qty=excluded.request_qty,
-                category=excluded.category
-        """, (
-            row.get('base_drug_name', ''),
-            row.get('medicine_name', ''),
-            row.get('stock_on_hand', 0),
-            row.get('in_transit', 0),
-            row.get('amc', 0),
-            row.get('request_qty', 0),
-            cat
-        ))
+        name = str(row.get("medicine_name", "")).strip()
+        if not name or name.lower() == "nan":
+            continue
+        cat = category or row.get("category") or "Medicines"
+        key = name.lower()
+
+        row_custom = {}
+        for c in custom_cols:
+            v = row.get(c)
+            if v is not None and not pd.isna(v) and str(v).strip() != "":
+                row_custom[c] = str(v).strip()
+
+        if key in existing:
+            stored_name, existing_cat, existing_cf = existing[key]
+            if existing_cat != cat:
+                summary["skipped"].append((stored_name, existing_cat))
+                continue
+
+            sets, params = [], []
+            for field in IMPORT_NUMERIC_FIELDS:
+                if field in df.columns:
+                    val = _clean_num(row.get(field))
+                    if val is not None:
+                        sets.append(f"{field} = ?")
+                        params.append(val)
+            if row_custom:
+                try:
+                    merged = json.loads(existing_cf) if existing_cf else {}
+                except (TypeError, ValueError):
+                    merged = {}
+                merged.update(row_custom)
+                sets.append("custom_fields = ?")
+                params.append(json.dumps(merged))
+            if sets:
+                params.append(stored_name)
+                cur.execute(f"UPDATE medicines SET {', '.join(sets)} WHERE medicine_name = ?", params)
+            summary["updated"] += 1
+        else:
+            base = row.get("base_drug_name", "")
+            if base is None or pd.isna(base) or str(base).strip() == "":
+                base = name.split()[0].upper() if name.split() else name.upper()
+            nums = [(_clean_num(row.get(f)) if f in df.columns else None) for f in IMPORT_NUMERIC_FIELDS]
+            nums = [0 if v is None else v for v in nums]
+            cur.execute("""
+                INSERT INTO medicines (base_drug_name, medicine_name, stock_on_hand, in_transit, amc, request_qty, category, custom_fields)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (str(base).strip(), name, nums[0], nums[1], nums[2], nums[3], cat, json.dumps(row_custom)))
+            existing[key] = (name, cat, json.dumps(row_custom))
+            summary["added"] += 1
+
     conn.commit()
     conn.close()
+    return summary
 
 def update_stock_levels(medicine_name, soh, transit, amc=0, request_qty=0, custom_fields_dict=None):
     if custom_fields_dict is None:
@@ -229,6 +325,42 @@ def delete_medicine(medicine_name, deleted_by_person, delete_date_time):
     
     conn.commit()
     conn.close()
+
+def delete_medicines_bulk(medicine_names, deleted_by_person, delete_date_time, category=None, reason=""):
+    """
+    Deletes several items in ONE transaction and writes an audit-trail entry for each one
+    (same 'DELETED' log format as delete_medicine). If 'category' is given, only items that
+    really belong to that category can be removed. Returns the list of names actually deleted.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    deleted = []
+    try:
+        for name in dict.fromkeys(medicine_names or []):
+            if category:
+                cur.execute(
+                    "SELECT 1 FROM medicines WHERE medicine_name = ? AND COALESCE(category, 'Medicines') = ?",
+                    (name, category))
+            else:
+                cur.execute("SELECT 1 FROM medicines WHERE medicine_name = ?", (name,))
+            if not cur.fetchone():
+                continue
+            comment = f"Item permanently deleted by {deleted_by_person} (bulk clean-up)."
+            if reason and reason.strip():
+                comment += f" Reason: {reason.strip()}"
+            cur.execute("""
+            INSERT INTO medicine_updates (medicine_name, update_date, status, owner, comment)
+            VALUES (?, ?, 'DELETED', ?, ?)
+            """, (name, delete_date_time, deleted_by_person, comment))
+            cur.execute("DELETE FROM medicines WHERE medicine_name = ?", (name,))
+            deleted.append(name)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return deleted
 
 def get_medicines_grid(category="Medicines"):
     conn = get_connection()
