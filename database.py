@@ -2,6 +2,7 @@ import os
 import sqlite3
 import pandas as pd
 import json
+from datetime import datetime
 
 def get_connection():
     railway_volume_path = "/data/medicines.db"
@@ -176,107 +177,143 @@ def get_existing_item_map():
     return {str(n).strip().lower(): (n, c) for n, c in rows if n}
 
 STATUS_NEW = "New"
-STATUS_UPDATE = "Update (already in this category)"
+STATUS_UPDATE = "Update numbers (already in this category)"
+STATUS_KEEP = "Already in this category (kept as is)"
 STATUS_BLOCKED_PREFIX = "Skipped - already exists in "
+IMPORT_STATUS_OPTIONS = ["Open", "In Progress", "Waiting Supplier", "Escalated", "Completed"]
 
-def classify_import_rows(df, category):
+def classify_import_rows(df, category, update_existing=False):
     """READ-ONLY. Adds an 'import_status' column telling the user exactly what the import will do."""
     if df is None or df.empty:
         return df
     existing = get_existing_item_map()
+    same_cat_label = STATUS_UPDATE if update_existing else STATUS_KEEP
     statuses = []
     for name in df["medicine_name"]:
         hit = existing.get(str(name).strip().lower())
         if hit is None:
             statuses.append(STATUS_NEW)
         elif hit[1] == category:
-            statuses.append(STATUS_UPDATE)
+            statuses.append(same_cat_label)
         else:
             statuses.append(f"{STATUS_BLOCKED_PREFIX}'{hit[1]}'")
     out = df.copy()
     out.insert(0, "import_status", statuses)
     return out
 
-def save_medicines(df, category=None, custom_cols=None):
+def _text_or_empty(val):
+    if val is None:
+        return ""
+    try:
+        if pd.isna(val):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(val).strip()
+
+def save_medicines(df, category=None, custom_cols=None, update_existing=False):
     """
     Safely imports rows from an Excel / pasted / typed table.
 
     Safety rules (this is what protects existing data):
       * A record that already lives in ANOTHER category is never touched or re-labelled.
-      * A record already in the SAME category only has the columns that were actually
-        supplied updated (stock is never silently reset to 0).
-      * Brand-new names are inserted with the target category exactly as given.
+      * A record already in the SAME category is left exactly as it is, unless
+        update_existing=True - and even then only the columns actually supplied are updated
+        (stock is never silently reset to 0).
+      * Brand-new names are inserted with the target category exactly as given, together with
+        SOH / Transit / AMC / Request, custom columns and (if supplied) an initial
+        Status / Owner / Note entry in the change log.
 
-    Returns a summary dict: {"added", "updated", "skipped": [(name, existing_category)]}.
+    Returns {"added", "updated", "kept", "skipped": [(name, existing_category)]}.
     """
-    custom_cols = [c for c in (custom_cols or []) if c in df.columns]
-    summary = {"added": 0, "updated": 0, "skipped": []}
+    summary = {"added": 0, "updated": 0, "kept": 0, "skipped": []}
     if df is None or df.empty:
         return summary
+    custom_cols = [c for c in (custom_cols or []) if c in df.columns]
 
     conn = get_connection()
     cur = conn.cursor()
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    target_default = category or "Medicines"
-    if target_default:
+    try:
+        target_default = category or "Medicines"
         cur.execute("INSERT OR IGNORE INTO categories (name) VALUES (?)", (target_default,))
 
-    cur.execute("SELECT medicine_name, COALESCE(category, 'Medicines'), COALESCE(custom_fields, '{}') FROM medicines")
-    existing = {str(n).strip().lower(): (n, c, cf) for n, c, cf in cur.fetchall() if n}
+        cur.execute("SELECT medicine_name, COALESCE(category, 'Medicines'), COALESCE(custom_fields, '{}') FROM medicines")
+        existing = {str(n).strip().lower(): (n, c, cf) for n, c, cf in cur.fetchall() if n}
 
-    for _, row in df.iterrows():
-        name = str(row.get("medicine_name", "")).strip()
-        if not name or name.lower() == "nan":
-            continue
-        cat = category or row.get("category") or "Medicines"
-        key = name.lower()
-
-        row_custom = {}
-        for c in custom_cols:
-            v = row.get(c)
-            if v is not None and not pd.isna(v) and str(v).strip() != "":
-                row_custom[c] = str(v).strip()
-
-        if key in existing:
-            stored_name, existing_cat, existing_cf = existing[key]
-            if existing_cat != cat:
-                summary["skipped"].append((stored_name, existing_cat))
+        for _, row in df.iterrows():
+            name = str(row.get("medicine_name", "")).strip()
+            if not name or name.lower() == "nan":
                 continue
+            cat = category or row.get("category") or "Medicines"
+            key = name.lower()
 
-            sets, params = [], []
-            for field in IMPORT_NUMERIC_FIELDS:
-                if field in df.columns:
-                    val = _clean_num(row.get(field))
-                    if val is not None:
-                        sets.append(f"{field} = ?")
-                        params.append(val)
-            if row_custom:
-                try:
-                    merged = json.loads(existing_cf) if existing_cf else {}
-                except (TypeError, ValueError):
-                    merged = {}
-                merged.update(row_custom)
-                sets.append("custom_fields = ?")
-                params.append(json.dumps(merged))
-            if sets:
-                params.append(stored_name)
-                cur.execute(f"UPDATE medicines SET {', '.join(sets)} WHERE medicine_name = ?", params)
-            summary["updated"] += 1
-        else:
-            base = row.get("base_drug_name", "")
-            if base is None or pd.isna(base) or str(base).strip() == "":
-                base = name.split()[0].upper() if name.split() else name.upper()
-            nums = [(_clean_num(row.get(f)) if f in df.columns else None) for f in IMPORT_NUMERIC_FIELDS]
-            nums = [0 if v is None else v for v in nums]
-            cur.execute("""
-                INSERT INTO medicines (base_drug_name, medicine_name, stock_on_hand, in_transit, amc, request_qty, category, custom_fields)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (str(base).strip(), name, nums[0], nums[1], nums[2], nums[3], cat, json.dumps(row_custom)))
-            existing[key] = (name, cat, json.dumps(row_custom))
-            summary["added"] += 1
+            row_custom = {}
+            for c in custom_cols:
+                v = _text_or_empty(row.get(c))
+                if v:
+                    row_custom[c] = v
 
-    conn.commit()
-    conn.close()
+            if key in existing:
+                stored_name, existing_cat, existing_cf = existing[key]
+                if existing_cat != cat:
+                    summary["skipped"].append((stored_name, existing_cat))
+                    continue
+                if not update_existing:
+                    summary["kept"] += 1
+                    continue
+
+                sets, params = [], []
+                for field in IMPORT_NUMERIC_FIELDS:
+                    if field in df.columns:
+                        val = _clean_num(row.get(field))
+                        if val is not None:
+                            sets.append(f"{field} = ?")
+                            params.append(val)
+                if row_custom:
+                    try:
+                        merged = json.loads(existing_cf) if existing_cf else {}
+                    except (TypeError, ValueError):
+                        merged = {}
+                    merged.update(row_custom)
+                    sets.append("custom_fields = ?")
+                    params.append(json.dumps(merged))
+                if sets:
+                    params.append(stored_name)
+                    cur.execute(f"UPDATE medicines SET {', '.join(sets)} WHERE medicine_name = ?", params)
+                summary["updated"] += 1
+            else:
+                base = _text_or_empty(row.get("base_drug_name"))
+                if not base:
+                    base = name.split()[0].upper() if name.split() else name.upper()
+                nums = [(_clean_num(row.get(f)) if f in df.columns else None) for f in IMPORT_NUMERIC_FIELDS]
+                nums = [0 if v is None else v for v in nums]
+                cur.execute("""
+                    INSERT INTO medicines (base_drug_name, medicine_name, stock_on_hand, in_transit, amc, request_qty, category, custom_fields)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (base, name, nums[0], nums[1], nums[2], nums[3], cat, json.dumps(row_custom)))
+
+                # initial Status / Owner / Note -> first entry in the change log
+                status = _text_or_empty(row.get("status"))
+                owner = _text_or_empty(row.get("owner"))
+                note = _text_or_empty(row.get("note"))
+                if status or owner or note:
+                    if status not in IMPORT_STATUS_OPTIONS:
+                        status = "Open"
+                    cur.execute(
+                        "INSERT INTO medicine_updates (medicine_name, update_date, status, owner, comment) VALUES (?, ?, ?, ?, ?)",
+                        (name, now_text, status, owner, note or "Imported from Excel"))
+
+                existing[key] = (name, cat, json.dumps(row_custom))
+                summary["added"] += 1
+
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
     return summary
 
 def update_stock_levels(medicine_name, soh, transit, amc=0, request_qty=0, custom_fields_dict=None):
@@ -362,6 +399,73 @@ def delete_medicines_bulk(medicine_names, deleted_by_person, delete_date_time, c
         conn.close()
     return deleted
 
+def get_category_group_names(category):
+    """READ-ONLY. Existing group names in a category (so imports can join them)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT DISTINCT base_drug_name FROM medicines WHERE COALESCE(category, 'Medicines') = ? AND base_drug_name IS NOT NULL", (category,))
+    groups = [r[0] for r in cur.fetchall() if r[0]]
+    conn.close()
+    return groups
+
+def item_name_taken(new_name, current_name):
+    """READ-ONLY. True if another item already uses this name (ignoring upper/lower case)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM medicines WHERE LOWER(TRIM(medicine_name)) = LOWER(TRIM(?)) AND medicine_name != ?", (new_name, current_name))
+    taken = cur.fetchone() is not None
+    conn.close()
+    return taken
+
+def update_item_details(old_name, new_name=None, new_group=None):
+    """
+    Renames an item and / or changes its group (used by the Advanced Details Editor).
+    The change log follows the item to its new name. Returns (ok, message).
+    """
+    new_name = (new_name or old_name).strip()
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT base_drug_name FROM medicines WHERE medicine_name = ?", (old_name,))
+        row = cur.fetchone()
+        if not row:
+            return False, f"Item '{old_name}' was not found."
+        group = (new_group or "").strip().upper() or (row[0] or "")
+        if new_name != old_name:
+            cur.execute("SELECT 1 FROM medicines WHERE LOWER(TRIM(medicine_name)) = LOWER(TRIM(?)) AND medicine_name != ?", (new_name, old_name))
+            if cur.fetchone():
+                return False, f"Another item is already called '{new_name}'."
+        cur.execute("UPDATE medicines SET base_drug_name = ?, medicine_name = ? WHERE medicine_name = ?", (group, new_name, old_name))
+        if new_name != old_name:
+            cur.execute("UPDATE medicine_updates SET medicine_name = ? WHERE medicine_name = ?", (new_name, old_name))
+        conn.commit()
+        return True, "Details updated."
+    except Exception as exc:
+        conn.rollback()
+        return False, str(exc)
+    finally:
+        conn.close()
+
+def regroup_items(changes):
+    """Sets a new group name for several items at once. 'changes' = [(medicine_name, new_group), ...]. Returns how many changed."""
+    conn = get_connection()
+    cur = conn.cursor()
+    changed = 0
+    try:
+        for name, group in changes:
+            group = str(group).strip().upper()
+            if not group:
+                continue
+            cur.execute("UPDATE medicines SET base_drug_name = ? WHERE medicine_name = ?", (group, name))
+            changed += cur.rowcount
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return changed
+
 def get_medicines_grid(category="Medicines"):
     conn = get_connection()
     query = """
@@ -380,6 +484,7 @@ def get_medicines_grid(category="Medicines"):
         SELECT medicine_name, status, owner, comment, update_date,
                ROW_NUMBER() OVER (PARTITION BY medicine_name ORDER BY created_at DESC) as rn
         FROM medicine_updates
+        WHERE COALESCE(status, '') != 'DELETED'
     ) mu ON m.medicine_name = mu.medicine_name AND mu.rn = 1
     WHERE COALESCE(m.category, 'Medicines') = ? OR (? = 'Medicines' AND m.category IS NULL)
     ORDER BY m.base_drug_name, m.medicine_name
@@ -407,6 +512,7 @@ def get_latest_statuses(category="Medicines"):
         SELECT medicine_name, status, owner, comment, update_date,
                ROW_NUMBER() OVER (PARTITION BY medicine_name ORDER BY created_at DESC) as rn
         FROM medicine_updates
+        WHERE COALESCE(status, '') != 'DELETED'
     ) mu ON m.medicine_name = mu.medicine_name AND mu.rn = 1
     WHERE COALESCE(m.category, 'Medicines') = ? OR (? = 'Medicines' AND m.category IS NULL)
     ORDER BY m.base_drug_name, m.medicine_name
@@ -441,6 +547,7 @@ def get_dashboard_stats(category="Medicines"):
     LEFT JOIN (
         SELECT medicine_name, status, ROW_NUMBER() OVER (PARTITION BY medicine_name ORDER BY created_at DESC) as rn 
         FROM medicine_updates
+        WHERE COALESCE(status, '') != 'DELETED'
     ) mu ON m.medicine_name = mu.medicine_name AND mu.rn = 1 
     WHERE COALESCE(m.category, 'Medicines') = ? OR (? = 'Medicines' AND m.category IS NULL)
     GROUP BY COALESCE(mu.status, 'Open')

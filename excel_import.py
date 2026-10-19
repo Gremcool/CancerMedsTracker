@@ -3,46 +3,135 @@ import re
 import pandas as pd
 from database import get_connection
 
-# NOTE: save_medicines now lives ONLY in database.py. A second copy used to live here and,
+# NOTE: save_medicines lives ONLY in database.py. A second copy used to live here and,
 # because app.py star-imports both modules, it silently shadowed the safe version.
 
 # ----------------------------------------------------------------------------
-# TEMPLATE DEFINITION (column order shown to the user + used for download)
+# FIELDS THE DIRECTORY UNDERSTANDS (same columns the Medicines grid has)
 # ----------------------------------------------------------------------------
-# header (as it appears in the sheet) -> (internal field, required?, help text)
+STATUS_OPTIONS = ["Open", "In Progress", "Waiting Supplier", "Escalated", "Completed"]
+
+# header (as written in the template) -> (internal field, required?, help text)
 TEMPLATE_BASE_COLUMNS = [
     ("ITEM DESCRIPTION", "medicine_name", True,  "Full item name exactly as you want it stored. Required."),
     ("BASE DRUG NAME",   "base_drug_name", False, "Optional grouping name. Leave blank to auto-detect from the item name."),
-    ("STOCK ON HAND",    "stock_on_hand", False, "Optional number. Blank = 0 for new items, unchanged for existing ones."),
-    ("IN TRANSIT",       "in_transit",    False, "Optional number."),
+    ("STOCK ON HAND",    "stock_on_hand", False, "Optional number (SOH). Blank = 0 for new items."),
+    ("IN TRANSIT",       "in_transit",    False, "Optional number (inbound / in transit)."),
     ("AMC",              "amc",           False, "Optional number (average monthly consumption)."),
-    ("REQUEST QTY",      "request_qty",   False, "Optional number."),
+    ("REQUEST QTY",      "request_qty",   False, "Optional number (quantity to request / order)."),
+    ("STATUS",           "status",        False, "Optional: Open, In Progress, Waiting Supplier, Escalated or Completed."),
+    ("OWNER",            "owner",         False, "Optional: person responsible."),
+    ("NOTE",             "note",          False, "Optional: first log note for the item."),
 ]
 NUMERIC_FIELDS = ["stock_on_hand", "in_transit", "amc", "request_qty"]
-RESERVED_FIELDS = {"medicine_name", "base_drug_name", "category", "import_status"} | set(NUMERIC_FIELDS)
+TRACKING_FIELDS = ["status", "owner", "note"]
+RESERVED_FIELDS = {"medicine_name", "base_drug_name", "category", "import_status"} | set(NUMERIC_FIELDS) | set(TRACKING_FIELDS)
 
-DESCRIPTION_HEADERS = ["ITEM DESCRIPTION", "MEDICINE NAME", "ITEM NAME", "ITEM", "DESCRIPTION", "NAME"]
+# (field, label shown in the mapping panel, required?)
+IMPORT_FIELDS = [
+    ("medicine_name", "Item description", True),
+    ("base_drug_name", "Base drug / group name", False),
+    ("stock_on_hand", "Stock on hand (SOH)", False),
+    ("in_transit", "In transit / inbound", False),
+    ("amc", "AMC", False),
+    ("request_qty", "Request quantity", False),
+    ("status", "Status", False),
+    ("owner", "Owner", False),
+    ("note", "Note / comment", False),
+]
+
+# Patterns are tried in order; the first sheet column that matches (and is not already used) wins.
+_DETECT_PATTERNS = {
+    "medicine_name": [r"^ITEM DESCRIPTION$", r"^MEDICINE NAME$", r"^ITEM NAME$", r"^ITEM$", r"^DESCRIPTION$", r"^NAME$"],
+    "base_drug_name": [r"^BASE DRUG NAME$", r"^DRUG GROUP$", r"^GROUP( NAME)?$"],
+    "stock_on_hand": [r"^(TOTAL )?(SOH|STOCK ON HAND)\b", r"^STOCK$"],
+    "in_transit": [r"^(IN ?TRANSIT|INBOUND|TRANSIT|ON ORDER)\b"],
+    "amc": [r"^AMC\b"],
+    "request_qty": [r"^REQUEST(ED)? (QTY|QUANTIT)", r"^(QTY|QUANTITY) TO (ORDER|REQUEST)", r"^ORDER QTY"],
+    "status": [r"^STATUS$"],
+    "owner": [r"^(OWNER|RESPONSIBLE( OFFICER)?|ASSIGNED TO)$"],
+    "note": [r"^(NOTE|NOTES|COMMENT|COMMENTS)$"],
+}
 
 
 def _norm(header):
     return re.sub(r"\s+", " ", str(header)).strip().upper()
 
 
+_GROUP_TAIL_WORDS = {"SMALL", "MEDIUM", "LARGE", "XL", "XXL", "XS", "SIZE", "NO", "NO.", "NUMBER",
+                     "WITH", "AND", "FOR", "OF", "IN", "TO", "X"}
+
+
+def _clean_for_group(name):
+    """Drops (...) notes and everything after the first comma, e.g. 'GLOVES, NITRILE (ASTM D6978), LARGE' -> 'GLOVES'."""
+    text = str(name).strip()
+    text = re.sub(r"\([^)]*\)?", " ", text)   # (...) including an unclosed "("
+    text = text.split(",")[0]
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def extract_base_drug_name(full_name):
-    """Isolates parent molecule definitions from raw input descriptions."""
+    """
+    Group name for an item: the product / drug name without strength, size or model code.
+      'Bosutinib Tab. 400 mg'                     -> 'BOSUTINIB TAB.'
+      'CHEMOTHERAPY GLOVES, NITRILE (...), LARGE'  -> 'CHEMOTHERAPY GLOVES'
+      'CONNECTOR C35'                              -> 'CONNECTOR'
+    """
     if pd.isna(full_name):
         return "UNKNOWN"
+    raw = str(full_name).strip()
+    text = _clean_for_group(raw) or raw
+    match = re.search(r"\d", text)
+    if match:
+        base = text[:match.start()]
+        if base and not base.endswith(" "):      # letters glued to the number are a model code (C35, U100, NO.15)
+            base = re.sub(r"\S+$", "", base)
+        base = re.sub(r"[\s,\-/]+$", "", base)
+        if not base:                              # name starts with a number -> first word
+            words = text.split()
+            return words[0].strip(",;").upper() if words else "UNKNOWN"
+    else:
+        base = text
+    tokens = base.split()
+    while len(tokens) > 1 and tokens[-1].upper() in _GROUP_TAIL_WORDS:
+        tokens.pop()
+    return " ".join(tokens).strip(",;-/ ").upper() or "UNKNOWN"
 
+
+def legacy_group_name(full_name):
+    """The group name the app used before smart grouping existed (text before the first number).
+    Used to tell automatically made groups from groups someone typed by hand."""
     text = str(full_name).strip()
     match = re.search(r'\d+', text)
     if match:
-        base = text[:match.start()].strip()
-        base = re.sub(r'[\s,\-]+$', '', base)
+        base = re.sub(r'[\s,\-]+$', '', text[:match.start()].strip())
         if base:
             return base.upper()
-
     words = text.split()
     return words[0].strip(",;").upper() if words else "UNKNOWN"
+
+
+def assign_groups(names, existing_groups=None):
+    """
+    Group name for every item in 'names'. Similar items end up under ONE group:
+    a name that starts with another group's name joins it ('CHEMO PORT NEEDLE' -> 'CHEMO PORT'),
+    and plural / singular variants are merged ('NEEDLES' -> 'NEEDLE').
+    'existing_groups' are the groups already in the category, so new items join them.
+    """
+    bases = [extract_base_drug_name(n) for n in names]
+    pool = {b for b in bases if b != "UNKNOWN"} | {str(g).strip().upper() for g in (existing_groups or []) if str(g).strip()}
+
+    def merge(base):
+        words = base.split()
+        for i in range(1, len(words)):
+            candidate = " ".join(words[:i])
+            if candidate in pool:
+                return candidate
+        if base.endswith("S") and len(base) > 3 and base[:-1] in pool:
+            return base[:-1]
+        return base
+
+    return [merge(b) for b in bases]
 
 
 def load_excel_sheets(uploaded_file):
@@ -102,15 +191,8 @@ def build_template_excel(category, custom_cols=None):
 
 
 def build_blank_entry_df(custom_cols=None, rows=5):
-    """Empty grid in the template column order, used for the 'type it in' option."""
-    data = {}
-    for header in get_template_columns(custom_cols):
-        field = next((f for h, f, _, _ in TEMPLATE_BASE_COLUMNS if h == header), None)
-        if field in NUMERIC_FIELDS:
-            data[header] = pd.Series([None] * rows, dtype="float64")
-        else:
-            data[header] = pd.Series([None] * rows, dtype="object")
-    return pd.DataFrame(data)
+    """Empty text grid in the template column order ('type it in'). All text so empty cells show blank, not 'None'."""
+    return pd.DataFrame({header: [""] * rows for header in get_template_columns(custom_cols)})
 
 
 def parse_pasted_text(text):
@@ -132,55 +214,145 @@ def parse_pasted_text(text):
 
 
 # ----------------------------------------------------------------------------
+# COLUMN DETECTION + MAPPING
+# ----------------------------------------------------------------------------
+def detect_column_mapping(df):
+    """
+    Works out which sheet column feeds which field, e.g. 'TOTAL SOH 03,JUNE 2026' -> stock_on_hand,
+    'QTY TO ORDER' -> request_qty. Returns {field: sheet column name (str) or None}.
+    """
+    mapping = {field: None for field, _, _ in IMPORT_FIELDS}
+    if df is None or len(df.columns) == 0:
+        return mapping
+
+    columns = [str(c) for c in df.columns]
+    normed = {c: _norm(c) for c in columns}
+    used = set()
+
+    for field, _, _ in IMPORT_FIELDS:
+        found = None
+        for pattern in _DETECT_PATTERNS[field]:
+            found = next((c for c in columns if c not in used and re.search(pattern, normed[c])), None)
+            if found:
+                break
+        # last resort for the item column (original behaviour): anything containing DESCRIPTION / ITEM
+        if field == "medicine_name" and not found:
+            found = next((c for c in columns if c not in used and ("DESCRIPTION" in normed[c] or "ITEM" in normed[c])), None)
+        if found:
+            mapping[field] = found
+            used.add(found)
+    return mapping
+
+
+def clean_extra_name(col):
+    """Header text used for a sheet column that is brought along as a custom column."""
+    name = " ".join(str(col).split())
+    if name.lower() in RESERVED_FIELDS:
+        name = f"{name} (sheet)"
+    return name
+
+
+def _cell_text(value):
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    text = str(value).strip()
+    return "" if text.lower() == "nan" else text
+
+
+def _to_number(series):
+    cleaned = series.astype(str).str.replace(",", "", regex=False).str.strip()
+    return pd.to_numeric(cleaned, errors="coerce").round(0)
+
+
+# ----------------------------------------------------------------------------
 # PREPARATION
 # ----------------------------------------------------------------------------
-def _find_description_column(df):
-    norm_map = {_norm(c): c for c in df.columns}
-    for wanted in DESCRIPTION_HEADERS:
-        if wanted in norm_map:
-            return norm_map[wanted]
-    return next((c for c in df.columns if 'DESCRIPTION' in str(c).upper() or 'ITEM' in str(c).upper()), None)
-
-
-def prepare_medicines(df, custom_cols=None):
+def prepare_medicines(df, custom_cols=None, mapping=None, extra_cols=None, existing_groups=None):
     """
     Maps spreadsheet columns into the directory layout.
 
-    Item names are kept EXACTLY as written in the sheet (only trimmed). Optional number columns
-    and this category's custom columns are picked up only when their header matches the template.
+    * Item names are kept EXACTLY as written in the sheet (only trimmed).
+    * 'mapping' is {field: sheet column}; when omitted it is auto-detected from the headers.
+    * Sheet columns matching this category's existing custom columns are picked up automatically.
+    * 'extra_cols' are additional sheet columns brought along as custom columns.
     """
     custom_cols = custom_cols or []
+    extra_cols = extra_cols or []
     if df is None or df.empty:
         return pd.DataFrame()
 
-    desc_col = _find_description_column(df)
+    col_by_str = {str(c): c for c in df.columns}
+    mapping = mapping if mapping is not None else detect_column_mapping(df)
+
+    def src(field):
+        name = mapping.get(field)
+        return col_by_str.get(str(name)) if name is not None else None
+
+    desc_col = src("medicine_name")
     if desc_col is None:
         return pd.DataFrame()
 
-    norm_map = {_norm(c): c for c in df.columns}
     out = pd.DataFrame({"medicine_name": df[desc_col]})
+    used_sources = {str(desc_col)}
 
-    # Optional explicit base drug name
-    base_src = norm_map.get("BASE DRUG NAME")
-    if base_src is not None and base_src != desc_col:
-        out["_base_given"] = df[base_src]
+    base_col = src("base_drug_name")
+    if base_col is not None:
+        out["_base_given"] = df[base_col]
+        used_sources.add(str(base_col))
 
-    # Optional numeric template columns. Only read when the sheet is clearly in template form
-    # (a legacy sheet that merely happens to contain an "AMC" column must not overwrite values).
-    template_signature = {"STOCK ON HAND", "IN TRANSIT", "REQUEST QTY"}
-    sheet_is_template = bool(template_signature & set(norm_map))
-    for header, field, _, _ in TEMPLATE_BASE_COLUMNS:
-        if field in NUMERIC_FIELDS and sheet_is_template:
-            src = norm_map.get(header)
-            if src is not None and src != desc_col:
-                cleaned = df[src].astype(str).str.replace(",", "", regex=False).str.strip()
-                out[field] = pd.to_numeric(cleaned, errors="coerce")
+    for field in NUMERIC_FIELDS:
+        col = src(field)
+        if col is not None:
+            out[field] = _to_number(df[col])
+            used_sources.add(str(col))
 
-    # Category custom columns
-    for col in custom_cols:
-        src = norm_map.get(_norm(col))
-        if src is not None and src != desc_col and col not in RESERVED_FIELDS:
-            out[col] = df[src]
+    # Tracking columns (what the Medicines grid shows as Status / Owner / Last Note)
+    status_col, owner_col, note_col = src("status"), src("owner"), src("note")
+    if status_col is not None or owner_col is not None or note_col is not None:
+        valid = {s.lower(): s for s in STATUS_OPTIONS}
+        n = len(df)
+        status_raw = df[status_col].map(_cell_text) if status_col is not None else pd.Series([""] * n, index=df.index)
+        owner_vals = df[owner_col].map(_cell_text) if owner_col is not None else pd.Series([""] * n, index=df.index)
+        note_vals = df[note_col].map(_cell_text) if note_col is not None else pd.Series([""] * n, index=df.index)
+        status_ok = status_raw.map(lambda t: valid.get(t.lower(), ""))
+        # a status the app does not know is kept as part of the note instead of being lost
+        note_final = [
+            (f"Status from sheet: {raw}. {note}".strip() if raw and not ok else note)
+            for raw, ok, note in zip(status_raw, status_ok, note_vals)
+        ]
+        if status_col is not None:
+            out["status"] = status_ok
+            used_sources.add(str(status_col))
+        if owner_col is not None:
+            out["owner"] = owner_vals
+            used_sources.add(str(owner_col))
+        if note_col is not None or status_col is not None:
+            out["note"] = pd.Series(note_final, index=df.index)
+            if note_col is not None:
+                used_sources.add(str(note_col))
+
+    # Custom columns: existing ones for this category + any extra sheet columns the user picked
+    custom_added = []
+    norm_to_src = {}
+    for c in df.columns:
+        norm_to_src.setdefault(_norm(c), c)
+    for name in custom_cols:
+        col = norm_to_src.get(_norm(name))
+        if col is not None and str(col) not in used_sources and name not in RESERVED_FIELDS:
+            out[name] = df[col].map(_cell_text)
+            used_sources.add(str(col))
+            custom_added.append(name)
+    for extra in extra_cols:
+        col = col_by_str.get(str(extra))
+        if col is None or str(col) in used_sources:
+            continue
+        name = clean_extra_name(col)
+        if name in out.columns:
+            continue
+        out[name] = df[col].map(_cell_text)
+        used_sources.add(str(col))
 
     out = out.dropna(subset=["medicine_name"])
     out["medicine_name"] = out["medicine_name"].astype(str).str.strip()
@@ -191,10 +363,10 @@ def prepare_medicines(df, custom_cols=None):
     if out.empty:
         return pd.DataFrame()
 
-    extracted = out["medicine_name"].apply(extract_base_drug_name)
+    extracted = assign_groups(out["medicine_name"].tolist(), existing_groups)
     if "_base_given" in out.columns:
-        given = out["_base_given"].fillna("").astype(str).str.strip()
-        out["base_drug_name"] = [g.upper() if g and g.lower() != "nan" else e for g, e in zip(given, extracted)]
+        given = out["_base_given"].map(_cell_text)
+        out["base_drug_name"] = [g.upper() if g else e for g, e in zip(given, extracted)]
         out = out.drop(columns=["_base_given"])
     else:
         out["base_drug_name"] = extracted
@@ -203,7 +375,8 @@ def prepare_medicines(df, custom_cols=None):
     # Same item twice (ignoring case) -> keep the first
     out = out[~out["medicine_name"].str.lower().duplicated()]
 
-    # Tidy column order: names first, then numbers, then custom columns
-    ordered = ["medicine_name", "base_drug_name"] + [f for f in NUMERIC_FIELDS if f in out.columns]
+    ordered = ["medicine_name", "base_drug_name"]
+    ordered += [f for f in NUMERIC_FIELDS if f in out.columns]
+    ordered += [f for f in TRACKING_FIELDS if f in out.columns]
     ordered += [c for c in out.columns if c not in ordered]
     return out[ordered].reset_index(drop=True)

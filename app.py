@@ -11,8 +11,24 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, date
 
+import html as _html
 from database import *
 from excel_import import *
+
+MD_SPECIAL_CHARS = r"([" + "\\\\" + "`*_~$" + "\\[" + "\\]" + "<>#|])"
+
+def md_escape(text):
+    """Shows user text exactly as typed (stops * _ ~ $ etc. from being read as Markdown formatting)."""
+    return re.sub(MD_SPECIAL_CHARS, lambda m: "\\" + m.group(1), str(text))
+
+def show_cell(value):
+    """Cell text for tables: empty / '-' shows an en dash (a bare '-' would be drawn as a bullet)."""
+    text = "" if value is None else str(value).strip()
+    return "–" if text in ("", "-") else md_escape(text)
+
+def html_safe(text):
+    """Makes user text safe to place inside HTML snippets."""
+    return _html.escape(str(text))
 
 # Configure page layout
 st.set_page_config(
@@ -262,9 +278,14 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Connect and activate database tables
-create_tables()
-update_schema()
+# Connect and activate database tables (once per server start, not on every click)
+@st.cache_resource(show_spinner=False)
+def _init_database():
+    create_tables()
+    update_schema()
+    return True
+
+_init_database()
 
 def parse_number(val):
     if val is None:
@@ -274,6 +295,7 @@ def parse_number(val):
     clean_str = re.sub(r'[^\d-]', '', str(val))
     return int(clean_str) if clean_str else 0
 
+@st.cache_data(show_spinner=False)
 def convert_df_to_excel(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -308,13 +330,28 @@ active_category = c_bar1.radio(
     label_visibility="collapsed"
 )
 
+# Clear the name boxes safely (Streamlit does not allow changing a widget's value after it is drawn)
+if st.session_state.pop("reset_input_new_category", False):
+    st.session_state.pop("input_new_category", None)
+if st.session_state.pop("reset_input_new_column", False):
+    st.session_state.pop("input_new_column", None)
+
 with c_bar2.popover("➕ New Category"):
     st.markdown("### Create Category")
     new_cat_input = st.text_input("Category Name", placeholder="e.g. Surgical Supplies...", key="input_new_category").strip()
+    medicines_custom_cols = get_category_custom_columns("Medicines")
+    copy_med_cols = False
+    if medicines_custom_cols:
+        copy_med_cols = st.checkbox(
+            f"Copy the Medicines custom columns ({', '.join(medicines_custom_cols)})",
+            value=True, key="copy_medicines_custom_cols")
     if st.button("🚀 Create Category", type="primary"):
         if new_cat_input:
             add_category(new_cat_input)
-            st.session_state["input_new_category"] = ""
+            if copy_med_cols:
+                for _col in medicines_custom_cols:
+                    add_category_custom_column(new_cat_input, _col)
+            st.session_state["reset_input_new_category"] = True
             st.session_state["toast_msg"] = f"Category '{new_cat_input}' created. Open the Master Import Portal tab to download its template."
             st.rerun()
         else:
@@ -342,7 +379,7 @@ with c_bar3.popover("⚙️ Custom Columns"):
     if st.button("➕ Add Field", type="primary", key="add_custom_col_btn"):
         if new_col_input:
             add_category_custom_column(active_category, new_col_input)
-            st.session_state["input_new_column"] = ""
+            st.session_state["reset_input_new_column"] = True
             st.rerun()
 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -446,14 +483,37 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-tabs = st.tabs([
+_TAB_NAMES = [
     "📊 Summary Action Dashboard",
     "🗓️ Live Meeting Review",
     "📥 Master Import Portal"
-])
+]
+try:
+    # Newer Streamlit: reruns when the tab changes, so a tab that is not open can be skipped
+    tabs = st.tabs(_TAB_NAMES, key="main_tabs", on_change="rerun")
+    _tabs_are_lazy = True
+except TypeError:
+    tabs = st.tabs(_TAB_NAMES)
+    _tabs_are_lazy = False
+
+def _open_review_tab():
+    """Button callback: jump to the Live Meeting Review tab (runs before the tabs are drawn)."""
+    st.session_state["main_tabs"] = _TAB_NAMES[1]
+
+def _dismiss_last_import():
+    st.session_state.pop("last_import", None)
+
+def tab_is_open(index):
+    """True when this tab is visible (always True on Streamlit versions that cannot tell)."""
+    if not _tabs_are_lazy:
+        return True
+    try:
+        return bool(tabs[index].open)
+    except Exception:
+        return True
 
 def get_board_column_weights(custom_cols_count):
-    weights = [0.4, 2.2, 1.1, 1.1, 1.1, 1.1]
+    weights = [0.55, 2.2, 1.1, 1.1, 1.1, 1.1]
     for _ in range(custom_cols_count):
         weights.append(1.0)
     weights.extend([1.4, 1.2, 1.8, 1.8, 0.9, 0.9])
@@ -566,7 +626,7 @@ with tabs[0]:
                         st.session_state.expanded_summary_groups.add(group_name)
                     st.rerun()
                 
-                r_elements[1].markdown(f"**{group_name}**")
+                r_elements[1].markdown(f"**{md_escape(group_name)}**")
                 r_elements[2].markdown(f"*Multiple items ({len(group_df)} items)*")
                 r_elements[3].markdown(f"**{sum_soh:,}**")
                 r_elements[4].markdown(f"**{sum_transit:,}**")
@@ -586,8 +646,8 @@ with tabs[0]:
                     for idx, row in group_df.iterrows():
                         sub_elements = st.columns(sum_weights)
                         sub_elements[0].write("")
-                        sub_elements[1].markdown(f"<span style='color: #777;'>{group_name}</span>", unsafe_allow_html=True)
-                        sub_elements[2].write(f"• {row['Medicine']}")
+                        sub_elements[1].markdown(f"<span style='color: #777;'>{html_safe(group_name)}</span>", unsafe_allow_html=True)
+                        sub_elements[2].write(f"• {md_escape(row['Medicine'])}")
                         sub_elements[3].write(f"{int(row['SOH']):,}")
                         sub_elements[4].write(f"{int(row['Transit']):,}")
                         sub_elements[5].write(f"{int(row['AMC']):,}")
@@ -596,17 +656,17 @@ with tabs[0]:
                         c_dict = json.loads(row['CustomFields']) if row['CustomFields'] else {}
                         c_idx = 7
                         for c_name in custom_cols:
-                            sub_elements[c_idx].write(str(c_dict.get(c_name, "-")))
+                            sub_elements[c_idx].write(show_cell(c_dict.get(c_name, "")))
                             c_idx += 1
                             
                         sub_elements[c_idx].markdown(render_status_badge(row['Status']), unsafe_allow_html=True)
-                        sub_elements[c_idx+1].write(row['Owner'] if row['Owner'] not in ('-', '') else '–')
-                        sub_elements[c_idx+2].caption(f"⏱️ ({row['Updated']}): {row['Note']}")
+                        sub_elements[c_idx+1].write(md_escape(row['Owner']) if row['Owner'] not in ('-', '') else '–')
+                        sub_elements[c_idx+2].caption(f"⏱️ ({row['Updated']}): {md_escape(row['Note'])}")
             else:
                 row = group_df.iloc[0]
                 r_elements[0].write("")
-                r_elements[1].markdown(f"**{group_name}**")
-                r_elements[2].write(row["Medicine"])
+                r_elements[1].markdown(f"**{md_escape(group_name)}**")
+                r_elements[2].write(md_escape(row["Medicine"]))
                 r_elements[3].write(f"{int(row['SOH']):,}")
                 r_elements[4].write(f"{int(row['Transit']):,}")
                 r_elements[5].write(f"{int(row['AMC']):,}")
@@ -615,21 +675,27 @@ with tabs[0]:
                 c_dict = json.loads(row['CustomFields']) if row['CustomFields'] else {}
                 c_idx = 7
                 for c_name in custom_cols:
-                    r_elements[c_idx].write(str(c_dict.get(c_name, "-")))
+                    r_elements[c_idx].write(show_cell(c_dict.get(c_name, "")))
                     c_idx += 1
                     
                 r_elements[c_idx].markdown(render_status_badge(row['Status']), unsafe_allow_html=True)
-                r_elements[c_idx+1].write(row["Owner"] if row["Owner"] not in ("-", "") else "–")
-                r_elements[c_idx+2].caption(f"⏱️ ({row['Updated']}): {row['Note']}")
+                r_elements[c_idx+1].write(md_escape(row["Owner"]) if row["Owner"] not in ("-", "") else "–")
+                r_elements[c_idx+2].caption(f"⏱️ ({row['Updated']}): {md_escape(row['Note'])}")
                 
             st.markdown("<hr style='margin:2px 0px; border-top: 1px dashed #444;' />", unsafe_allow_html=True)
 
 # ====================================================
 # TAB 2 ISOLATED FRAGMENT FOR LIGHTNING-FAST GRID INTERACTION
 # ====================================================
+GRID_PAGE_SIZE = 30   # rows drawn at first in the editable grid (raise it, e.g. to 1000, to always show everything)
+
 @st.fragment
 def render_review_board_grid(records, custom_cols, active_category):
     status_options = ["Open", "In Progress", "Waiting Supplier", "Escalated", "Completed"]
+    limit_key = f"grid_limit_{active_category}"
+    row_limit = st.session_state.get(limit_key, GRID_PAGE_SIZE)
+    total_rows = len(records)
+    visible_records = records.iloc[:row_limit]
     grid_weights = get_board_column_weights(len(custom_cols))
     
     # Header row
@@ -704,7 +770,7 @@ def render_review_board_grid(records, custom_cols, active_category):
     del_w = grid_weights[-1]
 
     # Render items
-    for idx, row in records.iterrows():
+    for idx, row in visible_records.iterrows():
         medicine = row["medicine_name"]
         group_label = row["base_drug_name"]
 
@@ -732,7 +798,7 @@ def render_review_board_grid(records, custom_cols, active_category):
             with st.form(key=f"row_form_{medicine}", border=False):
                 f_elements = st.columns(form_weights)
                 
-                f_elements[0].write(f"**{group_label}**\n\n{medicine}")
+                f_elements[0].write(f"**{md_escape(group_label)}**\n\n{md_escape(medicine)}")
                 
                 soh_raw = f_elements[1].text_input("SOH", value=f"{int(row['stock_on_hand']):,}", key=f"soh_{medicine}", label_visibility="collapsed")
                 transit_raw = f_elements[2].text_input("Inbound", value=f"{int(row['in_transit']):,}", key=f"transit_{medicine}", label_visibility="collapsed")
@@ -756,7 +822,7 @@ def render_review_board_grid(records, custom_cols, active_category):
                 last_note_html = f"""
                 <div class="last-note-box">
                     <span style="font-size: 0.72rem; color: #555; font-weight: bold;">⏱ ({row['last_updated']})</span><br/>
-                    <span style="font-size: 0.82rem; color: #111;">{row['last_comment'] or 'No notes'}</span>
+                    <span style="font-size: 0.82rem; color: #111;">{html_safe(row['last_comment'] or 'No notes')}</span>
                 </div>
                 """
                 f_elements[col_idx+2].markdown(last_note_html, unsafe_allow_html=True)
@@ -792,7 +858,7 @@ def render_review_board_grid(records, custom_cols, active_category):
             col_del.markdown('<div class="delete-btn-container">', unsafe_allow_html=True)
             with col_del.popover("🗑️", help=f"Delete {medicine}"):
                 st.markdown(f"### Delete Item")
-                st.warning(f"Are you sure you want to delete **'{medicine}'**?")
+                st.warning(f"Are you sure you want to delete **'{md_escape(medicine)}'**?")
                 deleter_name = st.text_input("Your Name (Required for audit log)", key=f"deleter_name_{medicine}").strip()
                 
                 if st.button("Confirm Delete", key=f"confirm_del_{medicine}", type="primary"):
@@ -807,7 +873,7 @@ def render_review_board_grid(records, custom_cols, active_category):
 
         # Instant Advanced Editor Window
         if is_selected:
-            st.markdown(f'<div class="adv-header-banner">✏️ Advanced Details Editor — {medicine}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="adv-header-banner">✏️ Advanced Details Editor — {html_safe(medicine)}</div>', unsafe_allow_html=True)
             with st.form(key=f"adv_form_{medicine}"):
                 st.markdown("#### Edit Standard Details")
                 
@@ -840,21 +906,33 @@ def render_review_board_grid(records, custom_cols, active_category):
                 adv_submitted = st.form_submit_button("💾 Save All Details", type="primary", help="Save all details")
                 
                 if adv_submitted:
-                    adv_soh = parse_number(adv_soh_raw)
-                    adv_transit = parse_number(adv_transit_raw)
-                    adv_amc = parse_number(adv_amc_raw)
-                    adv_req = parse_number(adv_req_raw)
+                    new_item_name = adv_name.strip() or medicine
+                    if new_item_name != medicine and item_name_taken(new_item_name, medicine):
+                        st.error(f"Another item is already called '{new_item_name}'. Please use a different description.")
+                    else:
+                        adv_soh = parse_number(adv_soh_raw)
+                        adv_transit = parse_number(adv_transit_raw)
+                        adv_amc = parse_number(adv_amc_raw)
+                        adv_req = parse_number(adv_req_raw)
 
-                    update_stock_levels(medicine, adv_soh, adv_transit, adv_amc, adv_req, custom_fields_dict=adv_custom_dict)
-                    comment_to_save = adv_note.strip() if adv_note.strip() else "Updated via Advanced Details Editor."
-                    save_update(medicine, datetime.now().strftime("%Y-%m-%d %H:%M"), adv_status, adv_owner, comment_to_save)
-                    
-                    # QUEUE RESETS BEFORE RERUN
-                    st.session_state[f"reset_comment_{medicine}"] = True
-                    st.session_state[f"reset_adv_note_{medicine}"] = True
-                    st.session_state[f"reset_chk_{medicine}"] = True
-                    st.session_state["toast_msg"] = "All Data is saved"
-                    st.rerun()
+                        update_stock_levels(medicine, adv_soh, adv_transit, adv_amc, adv_req, custom_fields_dict=adv_custom_dict)
+                        comment_to_save = adv_note.strip() if adv_note.strip() else "Updated via Advanced Details Editor."
+                        save_update(medicine, datetime.now().strftime("%Y-%m-%d %H:%M"), adv_status, adv_owner, comment_to_save)
+
+                        # group / description changes (these two boxes used to be ignored when saving)
+                        details_ok = True
+                        if new_item_name != medicine or adv_group.strip().upper() != str(group_label).strip().upper():
+                            details_ok, details_msg = update_item_details(medicine, new_item_name, adv_group)
+                            if not details_ok:
+                                st.error(details_msg)
+
+                        if details_ok:
+                            # QUEUE RESETS BEFORE RERUN
+                            st.session_state[f"reset_comment_{medicine}"] = True
+                            st.session_state[f"reset_adv_note_{medicine}"] = True
+                            st.session_state[f"reset_chk_{medicine}"] = True
+                            st.session_state["toast_msg"] = "All Data is saved"
+                            st.rerun()
 
         # History timeline expander
         with st.expander("📜 View Full Past Change Log Timeline", expanded=False):
@@ -865,129 +943,195 @@ def render_review_board_grid(records, custom_cols, active_category):
                 else:
                     for _, log in history_df.iloc[1:].iterrows():
                         st.markdown(f"🗓️ **{log['update_date']}** | Status: `{log['status']}` | Owner: `{log['owner'] or '-'}`")
-                        st.markdown(f"> *{log['comment']}*")
+                        st.markdown(f"> *{md_escape(log['comment'])}*")
             else:
                 st.caption("Select checkbox to view complete change history.")
         
         st.markdown("<hr style='margin:5px 0px; border-top: 1px dashed #444;' />", unsafe_allow_html=True)
 
+    if total_rows > row_limit:
+        more_c1, more_c2, more_c3 = st.columns([2.2, 1.4, 1.4])
+        more_c1.caption(f"Showing {row_limit} of {total_rows} items. Use the search box above to find a specific item.")
+        if more_c2.button(f"Show {min(GRID_PAGE_SIZE, total_rows - row_limit)} more", key=f"grid_more_{active_category}"):
+            st.session_state[limit_key] = row_limit + GRID_PAGE_SIZE
+            try:
+                st.rerun(scope="fragment")
+            except TypeError:
+                st.rerun()
+        if more_c3.button(f"Show all {total_rows}", key=f"grid_all_{active_category}"):
+            st.session_state[limit_key] = total_rows
+            try:
+                st.rerun(scope="fragment")
+            except TypeError:
+                st.rerun()
+
 # ====================================================
 # TAB 2: LIVE REVIEW & ITEM-BY-ITEM CREATION / DELETE
 # ====================================================
 with tabs[1]:
-    t2_head1, t2_head2 = st.columns([3.5, 1.2])
-    with t2_head1:
-        st.subheader(f"Interactive Board Grid — {active_category}")
-    with t2_head2:
-        if not export_data_df.empty:
-            st.download_button(
-                label="📊 Export Grid Data",
-                data=excel_bytes,
-                file_name=f"{active_category}_Grid_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="tab2_excel_export_btn",
-                use_container_width=True
-            )
+    if tab_is_open(1):
+        t2_head1, t2_head2 = st.columns([3.5, 1.2])
+        with t2_head1:
+            st.subheader(f"Interactive Board Grid — {active_category}")
+        with t2_head2:
+            if not export_data_df.empty:
+                st.download_button(
+                    label="📊 Export Grid Data",
+                    data=excel_bytes,
+                    file_name=f"{active_category}_Grid_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="tab2_excel_export_btn",
+                    use_container_width=True
+                )
 
-    records = get_medicines_grid(active_category)
+        records = get_medicines_grid(active_category)
     
-    if search_query and not records.empty:
-        records = records[
-            records["base_drug_name"].astype(str).str.lower().str.contains(search_query, na=False) |
-            records["medicine_name"].astype(str).str.lower().str.contains(search_query, na=False) |
-            records["owner"].astype(str).str.lower().str.contains(search_query, na=False) |
-            records["status"].astype(str).str.lower().str.contains(search_query, na=False)
-        ]
+        if search_query and not records.empty:
+            records = records[
+                records["base_drug_name"].astype(str).str.lower().str.contains(search_query, na=False) |
+                records["medicine_name"].astype(str).str.lower().str.contains(search_query, na=False) |
+                records["owner"].astype(str).str.lower().str.contains(search_query, na=False) |
+                records["status"].astype(str).str.lower().str.contains(search_query, na=False)
+            ]
     
-    st.caption(f"Add a new item row directly below under **{active_category}**, or modify/delete existing items.")
+        st.caption(f"Add a new item row directly below under **{active_category}**, or modify/delete existing items.")
 
-    # ---- Bulk delete / clean-up (collapsed by default so the grid layout is unchanged) ----
-    with st.expander("🧹 Bulk Delete — remove several items at once", expanded=False):
-        bulk_all = get_medicines_grid(active_category)
-        sel_key = f"bulk_del_sel_{active_category}"
-        name_key = f"bulk_del_name_{active_category}"
-        reason_key = f"bulk_del_reason_{active_category}"
-        confirm_key = f"bulk_del_confirm_{active_category}"
+        # ---- Bulk delete / clean-up (collapsed by default so the grid layout is unchanged) ----
+        with st.expander("🧹 Bulk Delete — remove several items at once", expanded=False):
+            bulk_all = get_medicines_grid(active_category)
+            sel_key = f"bulk_del_sel_{active_category}"
+            name_key = f"bulk_del_name_{active_category}"
+            reason_key = f"bulk_del_reason_{active_category}"
+            confirm_key = f"bulk_del_confirm_{active_category}"
 
-        # Clear the widgets safely BEFORE they are drawn (after a successful delete)
-        if st.session_state.pop(f"reset_bulk_del_{active_category}", False):
-            for _k in (sel_key, name_key, reason_key, confirm_key):
-                st.session_state.pop(_k, None)
+            # Clear the widgets safely BEFORE they are drawn (after a successful delete)
+            if st.session_state.pop(f"reset_bulk_del_{active_category}", False):
+                for _k in (sel_key, name_key, reason_key, confirm_key):
+                    st.session_state.pop(_k, None)
 
-        if bulk_all.empty:
-            st.info(f"No items in '{active_category}' to delete.")
-        else:
-            bulk_labels = {
-                r["medicine_name"]: f"{r['medicine_name']}   [{r['status']} | last update: {r['last_updated']}]"
-                for _, r in bulk_all.iterrows()
-            }
-            previously_deleted = bulk_all.loc[bulk_all["status"] == "DELETED", "medicine_name"].tolist()
+            if bulk_all.empty:
+                st.info(f"No items in '{active_category}' to delete.")
+            else:
+                bulk_labels = {
+                    r["medicine_name"]: f"{r['medicine_name']}   [{r['status']} | last update: {r['last_updated']}]"
+                    for _, r in bulk_all.iterrows()
+                }
+                previously_deleted = bulk_all.loc[bulk_all["status"] == "DELETED", "medicine_name"].tolist()
 
-            def _pick_previously_deleted(key, names):
-                st.session_state[key] = names
+                def _pick_previously_deleted(key, names):
+                    st.session_state[key] = names
 
-            st.caption("Pick the items that should not be here, enter your name for the audit log, tick the confirmation and delete. "
-                       "Every deleted item gets its own audit entry.")
-            st.button(
-                f"⚡ Select the {len(previously_deleted)} item(s) whose last status is DELETED (previously deleted, came back)",
-                key=f"bulk_pick_deleted_{active_category}",
-                on_click=_pick_previously_deleted,
-                args=(sel_key, previously_deleted),
-                disabled=not previously_deleted,
-            )
-            selected_to_delete = st.multiselect(
-                "Items to delete",
-                options=list(bulk_labels.keys()),
-                format_func=lambda n: bulk_labels.get(n, n),
-                key=sel_key,
-                placeholder="Search and pick one or more items...",
-            )
+                st.caption("Pick the items that should not be here, enter your name for the audit log, tick the confirmation and delete. "
+                           "Every deleted item gets its own audit entry.")
+                st.button(
+                    f"⚡ Select the {len(previously_deleted)} item(s) whose last status is DELETED (previously deleted, came back)",
+                    key=f"bulk_pick_deleted_{active_category}",
+                    on_click=_pick_previously_deleted,
+                    args=(sel_key, previously_deleted),
+                    disabled=not previously_deleted,
+                )
+                selected_to_delete = st.multiselect(
+                    "Items to delete",
+                    options=list(bulk_labels.keys()),
+                    format_func=lambda n: bulk_labels.get(n, n),
+                    key=sel_key,
+                    placeholder="Search and pick one or more items...",
+                )
 
-            if selected_to_delete:
-                preview_df = bulk_all[bulk_all["medicine_name"].isin(selected_to_delete)][
-                    ["base_drug_name", "medicine_name", "stock_on_hand", "status", "last_updated"]
-                ].rename(columns={"base_drug_name": "Group", "medicine_name": "Item", "stock_on_hand": "SOH",
-                                  "status": "Status", "last_updated": "Last updated"})
-                st.dataframe(preview_df, hide_index=True, use_container_width=True)
-                if len(selected_to_delete) == len(bulk_all):
-                    st.warning(f"This selects EVERY item in '{active_category}'.")
+                if selected_to_delete:
+                    preview_df = bulk_all[bulk_all["medicine_name"].isin(selected_to_delete)][
+                        ["base_drug_name", "medicine_name", "stock_on_hand", "status", "last_updated"]
+                    ].rename(columns={"base_drug_name": "Group", "medicine_name": "Item", "stock_on_hand": "SOH",
+                                      "status": "Status", "last_updated": "Last updated"})
+                    st.dataframe(preview_df, hide_index=True, use_container_width=True)
+                    if len(selected_to_delete) == len(bulk_all):
+                        st.warning(f"This selects EVERY item in '{active_category}'.")
 
-            bd_c1, bd_c2 = st.columns(2)
-            bulk_name = bd_c1.text_input("Your Name (Required for audit log)", key=name_key).strip()
-            bulk_reason = bd_c2.text_input("Reason (optional)", key=reason_key,
-                                           placeholder="e.g. Added by mistake during import")
-            bulk_confirm = st.checkbox(
-                f"I confirm I want to permanently delete {len(selected_to_delete)} item(s) from '{active_category}'",
-                key=confirm_key,
-            )
-            if st.button(f"🗑️ Delete {len(selected_to_delete)} selected item(s)", type="primary",
-                         key=f"bulk_del_btn_{active_category}"):
-                if not selected_to_delete:
-                    st.error("Please select at least one item.")
-                elif not bulk_name:
-                    st.error("Please enter your name to confirm deletion.")
-                elif not bulk_confirm:
-                    st.error("Please tick the confirmation box.")
+                bd_c1, bd_c2 = st.columns(2)
+                bulk_name = bd_c1.text_input("Your Name (Required for audit log)", key=name_key).strip()
+                bulk_reason = bd_c2.text_input("Reason (optional)", key=reason_key,
+                                               placeholder="e.g. Added by mistake during import")
+                bulk_confirm = st.checkbox(
+                    f"I confirm I want to permanently delete {len(selected_to_delete)} item(s) from '{active_category}'",
+                    key=confirm_key,
+                )
+                if st.button(f"🗑️ Delete {len(selected_to_delete)} selected item(s)", type="primary",
+                             key=f"bulk_del_btn_{active_category}"):
+                    if not selected_to_delete:
+                        st.error("Please select at least one item.")
+                    elif not bulk_name:
+                        st.error("Please enter your name to confirm deletion.")
+                    elif not bulk_confirm:
+                        st.error("Please tick the confirmation box.")
+                    else:
+                        done = delete_medicines_bulk(
+                            selected_to_delete, bulk_name, datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            category=active_category, reason=bulk_reason)
+                        st.session_state[f"reset_bulk_del_{active_category}"] = True
+                        st.session_state["toast_msg"] = f"{len(done)} item(s) deleted from '{active_category}' by {bulk_name}"
+                        st.rerun()
+    
+        # ---- Tidy groups: gives every category the same grouped look as Medicines drugs ----
+        with st.expander("🧩 Tidy Groups — put similar items under one group name", expanded=False):
+            if bulk_all.empty:
+                st.info(f"No items in '{active_category}' to group yet.")
+            else:
+                _tidy_names = bulk_all["medicine_name"].tolist()
+                _tidy_current = bulk_all["base_drug_name"].fillna("").astype(str).tolist()
+                _tidy_proposed = assign_groups(_tidy_names)
+                _tidy_changes = [(n, c, p) for n, c, p in zip(_tidy_names, _tidy_current, _tidy_proposed)
+                                 if c.strip().upper() != p]
+                if not _tidy_changes:
+                    st.success("All items in this category are already grouped sensibly.")
                 else:
-                    done = delete_medicines_bulk(
-                        selected_to_delete, bulk_name, datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        category=active_category, reason=bulk_reason)
-                    st.session_state[f"reset_bulk_del_{active_category}"] = True
-                    st.session_state["toast_msg"] = f"{len(done)} item(s) deleted from '{active_category}' by {bulk_name}"
-                    st.rerun()
-    
-    if len(records) == 0:
-        if search_query:
-            st.warning(f"No items match your search for **'{search_query}'** in {active_category}.")
-        else:
-            st.info(f"No items currently registered under '{active_category}'. Use the inline row above to add one.")
-    else:
+                    st.caption("Items with the same product name (e.g. different sizes or strengths) are put under one group, "
+                               "shown with a + / − button in the Summary Action Dashboard. Untick a row to leave it as it is, "
+                               "or type a different group name. Groups that someone typed by hand start unticked.")
+                    _tidy_df = pd.DataFrame({
+                        "Apply": [c[1].strip().upper() == legacy_group_name(c[0]) for c in _tidy_changes],
+                        "Item": [c[0] for c in _tidy_changes],
+                        "Current group": [c[1] for c in _tidy_changes],
+                        "New group": [c[2] for c in _tidy_changes],
+                    })
+                    _tidy_edited = st.data_editor(
+                        _tidy_df, hide_index=True, use_container_width=True,
+                        disabled=["Item", "Current group"],
+                        column_config={"Apply": st.column_config.CheckboxColumn("Apply", width="small")},
+                        key=f"tidy_editor_{active_category}_{abs(hash(tuple(_tidy_changes)))}",
+                    )
+                    _n_apply = int(_tidy_edited["Apply"].sum())
+                    if st.button(f"✅ Apply {_n_apply} group change(s)", type="primary",
+                                 key=f"tidy_apply_{active_category}", disabled=_n_apply == 0):
+                        _pairs = [(r["Item"], r["New group"]) for _, r in _tidy_edited.iterrows()
+                                  if r["Apply"] and str(r["New group"]).strip()]
+                        _done = regroup_items(_pairs)
+                        st.session_state["toast_msg"] = f"{_done} item(s) moved into their new group in '{active_category}'"
+                        st.rerun()
+
+        if len(records) == 0:
+            if search_query:
+                st.warning(f"No items match your search for **'{search_query}'** in {active_category}.")
+            else:
+                st.info(f"No items registered under '{active_category}' yet. Use the row below to add the first one, "
+                        "or import a list in the Master Import Portal.")
+        # The grid is drawn even when empty, so every category gets the same add-item row as Medicines
         render_review_board_grid(records, custom_cols, active_category)
 
 # ====================================================
 # TAB 3: MASTER IMPORT PORTAL
 # ====================================================
-def render_import_preview(df_prepared, target_category, cat_custom_cols, key_prefix):
+@st.cache_data(show_spinner=False)
+def read_all_sheets(file_bytes):
+    """Reads every sheet of an uploaded workbook once (cached), instead of on every click."""
+    return pd.read_excel(io.BytesIO(file_bytes), sheet_name=None)
+
+@st.cache_data(show_spinner=False)
+def get_template_bytes(category, custom_cols_tuple):
+    return build_template_excel(category, list(custom_cols_tuple))
+
+
+def render_import_preview(df_prepared, target_category, cat_custom_cols, key_prefix,
+                          update_existing=False, extra_custom_names=None):
     """Shows exactly what an import will do, then imports safely (never re-labels existing items)."""
     if df_prepared is None or df_prepared.empty:
         st.warning("No importable item rows were found. Make sure the data has an 'ITEM DESCRIPTION' column (see the template above).")
@@ -995,15 +1139,15 @@ def render_import_preview(df_prepared, target_category, cat_custom_cols, key_pre
 
     df_prepared = df_prepared.copy()
     df_prepared["category"] = target_category
-    df_preview = classify_import_rows(df_prepared, target_category)
+    df_preview = classify_import_rows(df_prepared, target_category, update_existing)
 
     n_new = int((df_preview["import_status"] == STATUS_NEW).sum())
-    n_update = int((df_preview["import_status"] == STATUS_UPDATE).sum())
+    n_same = int(df_preview["import_status"].isin([STATUS_UPDATE, STATUS_KEEP]).sum())
     n_blocked = int(df_preview["import_status"].str.startswith(STATUS_BLOCKED_PREFIX).sum())
 
     m1, m2, m3 = st.columns(3)
     m1.metric("New items to add", n_new)
-    m2.metric(f"Existing in {target_category} (update)", n_update)
+    m2.metric(f"Already in {target_category} ({'numbers will update' if update_existing else 'kept as is'})", n_same)
     m3.metric("Skipped (belong to another category)", n_blocked)
 
     if n_blocked:
@@ -1013,29 +1157,117 @@ def render_import_preview(df_prepared, target_category, cat_custom_cols, key_pre
             "If most rows are skipped, you probably selected the wrong sheet."
         )
 
+    can_import = (n_new + (n_same if update_existing else 0)) > 0
     if st.button(f"🚀 Import Records into {target_category}", type="primary",
-                 key=f"{key_prefix}_import_btn", disabled=(n_new + n_update) == 0):
-        result = save_medicines(df_prepared, category=target_category, custom_cols=cat_custom_cols)
+                 key=f"{key_prefix}_import_btn", disabled=not can_import):
+        extra_names = list(extra_custom_names or [])
+        for _name in extra_names:
+            add_category_custom_column(target_category, _name)
+        all_custom = list(dict.fromkeys(list(cat_custom_cols) + extra_names))
+        result = save_medicines(df_prepared, category=target_category, custom_cols=all_custom,
+                                update_existing=update_existing)
         st.session_state["toast_msg"] = (
             f"'{target_category}': added {result['added']}, updated {result['updated']}, "
-            f"skipped {len(result['skipped'])} (belong to other categories, left unchanged)."
+            f"kept {result['kept']} as they were, skipped {len(result['skipped'])} (other categories)."
         )
+        st.session_state["last_import"] = {
+            "category": target_category, "added": result["added"], "updated": result["updated"],
+            "kept": result["kept"], "skipped": len(result["skipped"]),
+        }
         st.rerun()
-    st.dataframe(df_preview, use_container_width=True)
+    preview_config = {
+        "import_status": st.column_config.TextColumn("Import status", width="medium"),
+        "medicine_name": st.column_config.TextColumn("Item description", width="large"),
+        "base_drug_name": st.column_config.TextColumn("Group"),
+        "stock_on_hand": st.column_config.NumberColumn("SOH", format="%d"),
+        "in_transit": st.column_config.NumberColumn("In transit", format="%d"),
+        "amc": st.column_config.NumberColumn("AMC", format="%d"),
+        "request_qty": st.column_config.NumberColumn("Request", format="%d"),
+        "status": st.column_config.TextColumn("Status"),
+        "owner": st.column_config.TextColumn("Owner"),
+        "note": st.column_config.TextColumn("Note"),
+        "category": st.column_config.TextColumn("Category"),
+    }
+    st.dataframe(df_preview, use_container_width=True, hide_index=True, column_config=preview_config)
+
+
+def render_import_flow(raw_df, target_category, cat_custom_cols, key_prefix, sig,
+                       show_mapping=True, quiet_if_empty=False):
+    """Column mapping (auto-detected, adjustable) -> preview -> import."""
+    if raw_df is None or raw_df.empty:
+        if not quiet_if_empty:
+            st.warning("No data found to import.")
+        return
+
+    sig = re.sub(r"\W+", "_", str(sig))
+    col_names = [str(c) for c in raw_df.columns]
+    detected = detect_column_mapping(raw_df)
+    mapping = dict(detected)
+    extras = []
+    update_existing = False
+
+    if show_mapping:
+        options = ["(none)"] + col_names
+        with st.expander("🔗 Column mapping — check each field is linked to the right column", expanded=False):
+            st.caption("The app matches headers such as 'TOTAL SOH', 'AMC' or 'QTY TO ORDER' automatically. Change a link if it picked the wrong column.")
+            map_cols = st.columns(3)
+            for i, (field, label, required) in enumerate(IMPORT_FIELDS):
+                default = detected.get(field)
+                idx = options.index(default) if default in options else 0
+                choice = map_cols[i % 3].selectbox(
+                    label + (" *" if required else ""), options, index=idx,
+                    key=f"{key_prefix}_map_{field}_{sig}")
+                mapping[field] = None if choice == "(none)" else choice
+
+            used = {v for v in mapping.values() if v}
+            extra_candidates = [c for c in col_names
+                                if c not in used and not c.lower().startswith("unnamed") and c.strip().upper() != "SN"]
+            extras = st.multiselect(
+                "Bring other columns along as custom columns (optional)",
+                extra_candidates, default=[], key=f"{key_prefix}_extras_{sig}",
+                help="Each column you pick becomes a custom column of this category, with its values filled in.")
+
+        linked = [f"{label} ← {mapping[field]}" for field, label, _ in IMPORT_FIELDS if mapping.get(field)]
+        st.caption("**Linked columns:** " + "  ·  ".join(linked) if linked else "No columns linked yet.")
+
+    update_existing = st.checkbox(
+        f"Also update SOH / Transit / AMC / Request for items that already exist in {target_category}",
+        value=False, key=f"{key_prefix}_update_existing_{sig}",
+        help="Off (default): existing items are left exactly as they are. New items always get all their values.")
+
+    df_prepared = prepare_medicines(raw_df, cat_custom_cols, mapping=mapping, extra_cols=extras,
+                                    existing_groups=get_category_group_names(target_category))
+    if df_prepared.empty and quiet_if_empty:
+        return
+    extra_names = [clean_extra_name(c) for c in extras]
+    render_import_preview(df_prepared, target_category, cat_custom_cols, key_prefix,
+                          update_existing=update_existing, extra_custom_names=extra_names)
 
 
 with tabs[2]:
     st.subheader(f"Seed Baseline Directory — {active_category}")
     st.write(f"Upload an Excel sheet formatted identically to seed or update records inside **{active_category}**.")
 
+    _li = st.session_state.get("last_import")
+    if _li and _li.get("category") == active_category:
+        st.success(
+            f"✅ Import finished for **{active_category}**: {_li['added']} added, {_li['updated']} updated, "
+            f"{_li['kept']} kept as they were, {_li['skipped']} skipped (belong to other categories). "
+            "The items are now in the Summary Action Dashboard and the Live Meeting Review of this category.")
+        _b1, _b2, _ = st.columns([1.3, 0.8, 4])
+        if _tabs_are_lazy:
+            _b1.button("👉 Open Live Meeting Review", key="goto_review_btn", on_click=_open_review_tab)
+        _b2.button("Dismiss", key="dismiss_last_import_btn", on_click=_dismiss_last_import)
+
     # ---- Template / column order -------------------------------------------------
     template_cols = get_template_columns(custom_cols)
-    st.info("**Column order:** " + "  →  ".join(template_cols) + "  \n Only **ITEM DESCRIPTION** is required; the rest are optional.")
+    st.info("**Column order:** " + "  →  ".join(template_cols) + "  \n Only **ITEM DESCRIPTION** is required; the rest are optional. "
+            "Sheets with other headers (e.g. 'TOTAL SOH', 'QTY TO ORDER') are matched automatically.")
 
     t_col1, t_col2 = st.columns([1, 3])
     t_col1.download_button(
         "⬇️ Download Excel Template",
-        data=build_template_excel(active_category, custom_cols),
+        data=get_template_bytes(active_category, tuple(custom_cols)),
         file_name=f"{active_category.replace(' ', '_')}_import_template.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key=f"download_template_{active_category}",
@@ -1057,14 +1289,14 @@ with tabs[2]:
 
         if uploaded_file:
             try:
-                file_bytes = uploaded_file.getvalue()
-                sheets = load_excel_sheets(io.BytesIO(file_bytes))
+                sheets_data = read_all_sheets(uploaded_file.getvalue())
+                sheets = list(sheets_data.keys())
 
                 # Work out how many genuinely NEW items each sheet would add, so the right sheet is pre-selected
                 sheet_new_counts = {}
                 for sh in sheets:
                     try:
-                        prep = prepare_medicines(load_excel(io.BytesIO(file_bytes), sheet_name=sh), custom_cols)
+                        prep = prepare_medicines(sheets_data[sh], custom_cols)
                         if prep.empty:
                             sheet_new_counts[sh] = 0
                         else:
@@ -1083,14 +1315,25 @@ with tabs[2]:
                     key=f"sheet_sel_{active_category}_{uploaded_file.name}_{uploaded_file.size}",
                 )
 
-                df = load_excel(io.BytesIO(file_bytes), sheet_name=selected_sheet)
-                df_prepared = prepare_medicines(df, custom_cols)
-                render_import_preview(df_prepared, active_category, custom_cols, "upload")
+                render_import_flow(
+                    sheets_data[selected_sheet], active_category, custom_cols, "upload",
+                    sig=f"{active_category}_{uploaded_file.name}_{uploaded_file.size}_{selected_sheet}")
             except Exception as e:
-                st.error(f"Excel Parser Error: {e}")
+                if "xlrd" in str(e).lower():
+                    st.error(
+                        "This is an old-style **.xls** file, and the package that reads .xls files (**xlrd**) is not installed "
+                        "on the computer/server running this app.")
+                    st.markdown(
+                        "**Quick fix (works right now):** open the file in Excel, choose **File → Save As → Excel Workbook (.xlsx)**, "
+                        "then upload the .xlsx file.\n\n"
+                        "**Permanent fix:** in the same terminal/environment you use for `streamlit run app.py`, run "
+                        "`pip install xlrd` (or `pip install -r requirements.txt`) and restart the app. "
+                        "Your `requirements.txt` already lists xlrd, so a Railway deploy installs it automatically.")
+                else:
+                    st.error(f"Excel Parser Error: {e}")
 
     elif input_mode == "📋 Paste from Excel":
-        st.caption("Copy the cells in Excel (include the header row in the column order above) and paste them here. "
+        st.caption("Copy the cells in Excel (include the header row) and paste them here. "
                    "A plain list with one item name per line also works.")
         pasted = st.text_area(
             "Paste data here",
@@ -1100,13 +1343,14 @@ with tabs[2]:
         )
         if pasted.strip():
             try:
-                df_prepared = prepare_medicines(parse_pasted_text(pasted), custom_cols)
-                render_import_preview(df_prepared, active_category, custom_cols, "paste")
+                render_import_flow(parse_pasted_text(pasted), active_category, custom_cols, "paste",
+                                   sig=f"{active_category}_{len(pasted)}_{hash(pasted.splitlines()[0])}")
             except Exception as e:
                 st.error(f"Could not read the pasted data: {e}")
 
     else:
-        st.caption("Type or paste directly into the table. Use the + row at the bottom to add more lines.")
+        st.caption("Type or paste directly into the table. Use the + row at the bottom to add more lines. "
+                   "Numbers can be typed with or without commas.")
         edited_df = st.data_editor(
             build_blank_entry_df(custom_cols),
             num_rows="dynamic",
@@ -1115,8 +1359,7 @@ with tabs[2]:
             key=f"typed_entry_{active_category}_{'|'.join(template_cols)}",
         )
         try:
-            df_prepared = prepare_medicines(edited_df, custom_cols)
-            if not df_prepared.empty:
-                render_import_preview(df_prepared, active_category, custom_cols, "typed")
+            render_import_flow(edited_df, active_category, custom_cols, "typed",
+                               sig=f"{active_category}", show_mapping=False, quiet_if_empty=True)
         except Exception as e:
             st.error(f"Could not read the table: {e}")
